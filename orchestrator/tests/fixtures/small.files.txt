@@ -1,0 +1,6 @@
+café.txt
+docs/new_name.txt
+obsolete.txt
+src/calc.py
+src/new.py
+with space.txt

@@ -1,0 +1,71 @@
+diff --git a/café.txt b/café.txt
+new file mode 100644
+index 0000000..572eb43
+--- /dev/null
++++ b/café.txt
+@@ -0,0 +1 @@
++café
+diff --git a/docs/old_name.txt b/docs/new_name.txt
+similarity index 89%
+rename from docs/old_name.txt
+rename to docs/new_name.txt
+index ae121a6..c24ac0b 100644
+--- a/docs/old_name.txt
++++ b/docs/new_name.txt
+@@ -2,7 +2,7 @@ line one
+ line two
+ line three
+ line four
+-line five
++line 5
+ line six
+ line seven
+ line eight
+diff --git a/obsolete.txt b/obsolete.txt
+deleted file mode 100644
+index 286c5f5..0000000
+--- a/obsolete.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-gone
+diff --git a/src/calc.py b/src/calc.py
+index a43bd74..305d8f3 100644
+--- a/src/calc.py
++++ b/src/calc.py
+@@ -3,16 +3,16 @@ def add(a, b):
+ 
+ 
+ def sub(a, b):
+-    return a - b
++    return a - b  # subtract
+ 
+ 
+ def mul(a, b):
+     return a * b
+ 
+ 
+-def div(a, b):
+-    return a / b
+-
+-
+ def mod(a, b):
+     return a % b
++
++
++def pow_(a, b):
++    return a ** b
+diff --git a/src/new.py b/src/new.py
+new file mode 100644
+index 0000000..c9267f1
+--- /dev/null
++++ b/src/new.py
+@@ -0,0 +1,2 @@
++brand new
++second
+diff --git a/with space.txt b/with space.txt
+index 587be6b..b77b4eb 100644
+--- a/with space.txt	
++++ b/with space.txt	
+@@ -1 +1,2 @@
+ x
++y

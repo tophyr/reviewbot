@@ -1,0 +1,38 @@
+# systemd user unit for the reviewbot orchestrator, the program that polls
+# GitHub and runs one review at a time (`reviewbot run`).
+# Installed by deploy/install.sh into ~/.config/systemd/user/.
+#
+# Settings come from ~/.config/reviewbot/env (mode 0600), read as an
+# EnvironmentFile; values in that file override the Environment= lines
+# below. The file holds CLAUDE_CODE_OAUTH_TOKEN, which the orchestrator
+# passes by name to the proxy container it starts for each review and uses to
+# check that a review does not contain it, and it exits 2 when the variable
+# is unset or empty.
+#
+# The orchestrator starts and removes its fetcher, reviewer and proxy
+# containers itself, so the only unit it needs is the rootless docker user
+# unit.
+
+[Unit]
+Description=reviewbot pull request reviewer (orchestrator)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=exec
+WorkingDirectory=%h/.local/share/reviewbot
+Environment=REVIEWBOT_STATE_DIR=%h/.local/share/reviewbot/state
+Environment=REVIEWBOT_WORK_DIR=%h/.local/share/reviewbot/work
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=%h/.config/reviewbot/env
+ExecStart=%h/.local/share/reviewbot/venv/bin/reviewbot run
+Restart=on-failure
+RestartSec=60
+# Exit status 2 is a configuration error; restarting will not fix it.
+RestartPreventExitStatus=2
+TimeoutStopSec=60
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

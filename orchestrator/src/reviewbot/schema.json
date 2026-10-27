@@ -1,0 +1,57 @@
+{
+  "type": "object",
+  "required": [
+    "summary",
+    "verdict",
+    "comments"
+  ],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "comment",
+        "request_changes"
+      ]
+    },
+    "comments": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "line",
+          "severity",
+          "body"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "bug",
+              "security",
+              "suggestion",
+              "nit"
+            ]
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 1500
+          }
+        }
+      }
+    }
+  }
+}

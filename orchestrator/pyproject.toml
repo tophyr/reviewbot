@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reviewbot"
+version = "0.1.0"
+description = "Orchestrator for reviewbot: polls GitHub pull requests, runs the fetcher and reviewer containers, validates and posts reviews."
+requires-python = ">=3.12"
+dependencies = [
+    "PyJWT[crypto]>=2.8",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+reviewbot = "reviewbot.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+reviewbot = ["schema.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

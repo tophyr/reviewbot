@@ -1,0 +1,14 @@
+{
+  "repo": "example/shop",
+  "number": 7,
+  "title": "Add cart_total and apply_discount",
+  "body": "Adds `cart_total` to sum every line of a cart, and `apply_discount` for percentage discounts. Includes tests for the discount helper.",
+  "author": "contributor",
+  "base_ref": "main",
+  "base_sha": "FILLED_IN_BY_TEST",
+  "head_ref": "cart-totals",
+  "head_sha": "FILLED_IN_BY_TEST",
+  "head_repo": "contributor/shop",
+  "html_url": "https://github.com/example/shop/pull/7",
+  "labels": []
+}

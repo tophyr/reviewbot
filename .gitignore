@@ -1,0 +1,6 @@
+.env
+work/
+state/
+__pycache__/
+*.pyc
+tests/e2e/out/
