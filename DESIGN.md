@@ -349,7 +349,7 @@ The orchestrator's configuration is environment variables, read by
   exits 2 at startup when the variable is unset or empty.
 - `REVIEWBOT_DOCKER_PREFIX` (default `reviewbot`): see "Docker names".
 - `REVIEWBOT_APP_ID`, `REVIEWBOT_APP_PRIVATE_KEY_PATH`: the GitHub App; both required
-- `REVIEWBOT_POLL_SECONDS` (default 180), `REVIEWBOT_MAX_REVIEWS_PER_HOUR` (default 6)
+- `REVIEWBOT_POLL_SECONDS` (default 180), `REVIEWBOT_MAX_REVIEWS_PER_HOUR` (default 20)
 - `REVIEWBOT_STATE_DIR` (default `./state`), `REVIEWBOT_WORK_DIR` (default `./work`)
 - `REVIEWBOT_DRY_RUN`: `1` prints the review instead of posting
 

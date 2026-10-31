@@ -161,7 +161,7 @@ orchestrator reads, with its default:
 | `REVIEWBOT_APP_ID` | GitHub App ID; required | none |
 | `REVIEWBOT_APP_PRIVATE_KEY_PATH` | path to the app private key; required | none |
 | `REVIEWBOT_POLL_SECONDS` | seconds between polling passes | 180 |
-| `REVIEWBOT_MAX_REVIEWS_PER_HOUR` | cap on reviewer runs in a rolling hour | 6 |
+| `REVIEWBOT_MAX_REVIEWS_PER_HOUR` | cap on reviewer runs in a rolling hour | 20 |
 | `REVIEWBOT_DRY_RUN` | `1` prints the review instead of posting it | `1` in the shipped env file |
 | `REVIEWBOT_MODEL` | model for the review container | `opus` |
 | `REVIEWBOT_GITHUB_API_URL` | GitHub REST API base URL; the tests point it at a local fake | `https://api.github.com` |

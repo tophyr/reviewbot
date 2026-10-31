@@ -203,7 +203,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         app_id=app_id,
         app_private_key_path=key_path,
         poll_seconds=_int(env, "REVIEWBOT_POLL_SECONDS", 180, minimum=10),
-        max_reviews_per_hour=_int(env, "REVIEWBOT_MAX_REVIEWS_PER_HOUR", 6),
+        max_reviews_per_hour=_int(env, "REVIEWBOT_MAX_REVIEWS_PER_HOUR", 20),
         state_dir=Path(env.get("REVIEWBOT_STATE_DIR", "./state")).expanduser().resolve(),
         work_dir=work_dir,
         dry_run=_flag(env, "REVIEWBOT_DRY_RUN"),
