@@ -5,6 +5,7 @@ docker binary in fakedocker.py; only GitHub is faked in Python.
 """
 
 import json
+import logging
 
 import pytest
 from conftest import fixture_text
@@ -264,24 +265,70 @@ def test_api_error_ends_the_pass_before_the_next_pull_request(tmp_path, monkeypa
     assert state.data["prs"] == {}
 
 
-@pytest.mark.parametrize("stdout", [
-    API_ERRORS["400"],  # the API refused the request; a large PR can cause that
-    json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True,
-                "terminal_reason": "max_turns"}),
+# The detail names how Claude Code's run ended, from its top-level fields only.
+@pytest.mark.parametrize("stdout, detail", [
+    # the API refused the request; a large PR can cause that
+    (API_ERRORS["400"],
+     "reviewer exit 1 (subtype success, terminal_reason api_error, API status 400, 1 turn)"),
+    (json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True,
+                 "terminal_reason": "max_turns", "num_turns": 40}),
+     "reviewer exit 1 (subtype error_max_turns, terminal_reason max_turns, 40 turns)"),
     # the fields only inside model output, not at the top level
-    json.dumps({"type": "result", "is_error": True, "subtype": "success",
-                "result": '{"terminal_reason": "api_error", "api_error_status": 401}',
-                "structured_output": {"terminal_reason": "api_error", "api_error_status": 401}}),
-    json.dumps({"type": "result", "is_error": False, "terminal_reason": "api_error",
-                "api_error_status": 529}),
-    "not json",
-], ids=["400", "max-turns", "nested-only", "not-is_error", "not-json"])
-def test_other_reviewer_failures_are_still_attempts(tmp_path, monkeypatch, stdout):
+    (json.dumps({"type": "result", "is_error": True, "subtype": "success",
+                 "result": '{"terminal_reason": "api_error", "api_error_status": 401}',
+                 "structured_output": {"terminal_reason": "api_error",
+                                       "api_error_status": 401}}),
+     "reviewer exit 1 (subtype success)"),
+    (json.dumps({"type": "result", "is_error": False, "terminal_reason": "api_error",
+                 "api_error_status": 529}),
+     "reviewer exit 1 (terminal_reason api_error, API status 529)"),
+    # a value of an unexpected shape is left out
+    (json.dumps({"type": "result", "is_error": True, "subtype": "@someone see #12",
+                 "terminal_reason": "max_turns", "num_turns": "40"}),
+     "reviewer exit 1 (terminal_reason max_turns)"),
+    ("not json", "reviewer exit 1"),
+], ids=["400", "max-turns", "nested-only", "not-is_error", "odd-values", "not-json"])
+def test_other_reviewer_failures_are_still_attempts(tmp_path, monkeypatch, stdout, detail):
     install(tmp_path, monkeypatch, review_stdout=stdout, review_rc=1)
     ctx, api, state = setup(tmp_path)
     out = pipeline.run_and_record(ctx, pr_json())
     assert out.status == "failed", out.detail
+    assert out.detail == detail
     assert state.entry(KEY)["status"] == "failed"
+
+
+USAGE = {"num_turns": 5, "total_cost_usd": 0.0851574, "duration_ms": 13488,
+         "usage": {"input_tokens": 6, "cache_read_input_tokens": 12887,
+                   "cache_creation_input_tokens": 7622, "output_tokens": 1079}}
+USAGE_LINE = ("reviewer usage for Owner/Repo#7: 5 turns, 20515 input tokens (12887 read from "
+              "the cache, 7622 written to it, 6 uncached), 1079 output tokens, $0.0852 at "
+              "list price, 13.5s")
+
+
+@pytest.mark.parametrize("rc, status", [(0, "posted"), (1, "failed")])
+def test_reviewer_usage_is_logged_for_every_run(tmp_path, monkeypatch, caplog, rc, status):
+    caplog.set_level(logging.INFO)
+    stdout = json.dumps({**json.loads(GOOD), **USAGE, "is_error": bool(rc)})
+    install(tmp_path, monkeypatch, review_stdout=stdout, review_rc=rc)
+    ctx, api, state = setup(tmp_path)
+    assert pipeline.run_and_record(ctx, pr_json()).status == status
+    assert USAGE_LINE in caplog.text
+
+
+def test_reviewer_usage_reads_only_top_level_numbers(tmp_path, monkeypatch, caplog):
+    # Counts that are not numbers are left out, and figures that appear only
+    # in the model's output are not read.
+    caplog.set_level(logging.INFO)
+    doc = json.loads(GOOD)
+    doc["structured_output"]["num_turns"] = 99
+    doc.update({"num_turns": "5", "total_cost_usd": True, "duration_ms": 13488,
+                "usage": {"input_tokens": 6, "cache_read_input_tokens": "12887",
+                          "cache_creation_input_tokens": 7622, "output_tokens": 1079}})
+    install(tmp_path, monkeypatch, review_stdout=json.dumps(doc))
+    ctx, api, state = setup(tmp_path)
+    pipeline.run_and_record(ctx, pr_json())
+    assert "reviewer usage for Owner/Repo#7: 1079 output tokens, 13.5s" in caplog.text
+    assert "99 turns" not in caplog.text
 
 
 def test_once_exits_1_when_the_pass_ends_on_an_environment_failure(tmp_path, monkeypatch):

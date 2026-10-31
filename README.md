@@ -229,7 +229,10 @@ after adding or changing `REVIEWBOT_PROMPT_FILE`, run
   output is not kept, except the proxy's: before it removes the proxy, the
   orchestrator copies the proxy's log lines with status 403 (requests the
   review container made that the proxy does not forward) into its own log as
-  warnings.
+  warnings. After every reviewer run, successful or not, a `reviewer usage`
+  line gives the number of turns, the input tokens (split into cache reads,
+  cache writes and uncached), the output tokens, the cost at list price as
+  Claude Code reports it, and the duration.
 - State: `~/.local/share/reviewbot/state/state.json` records, for each
   `owner/name#number` (the repository name as GitHub reports it), the last
   reviewed head commit and its status (`posted`, `refused`, `skipped`,

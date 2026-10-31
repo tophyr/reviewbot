@@ -447,8 +447,11 @@ notice on the pull request, as a review with event `COMMENT` and a body only:
 - after the third `failed` record for that commit, quoting the last failure's
   detail. Only failures whose detail the orchestrator wrote are quoted: a
   container's exit status, a rejected fetcher output, a token request's
-  status, a schema error or the body length. An unexpected exception or a
-  failed review POST gets no notice.
+  status, a schema error or the body length. A failed reviewer run's detail
+  also names how Claude Code's run ended, from the top-level fields of its
+  result (`subtype`, `terminal_reason`, `api_error_status`, `num_turns`),
+  never from the model's text; a value of an unexpected shape is left out.
+  An unexpected exception or a failed review POST gets no notice.
 - after a `refused` record, saying only that the output failed a safety
   check, so the notice does not tell a prompt injection which check it met.
 

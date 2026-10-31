@@ -36,6 +36,76 @@ API_ENVIRONMENT_STATUSES = {401: "authentication", 403: "permission", 404: "mode
                             429: "rate limit"}
 
 
+def _result_document(stdout: str) -> dict | None:
+    """Claude Code's result object from `claude -p --output-format json`
+    stdout, in either the object or the array form, or None."""
+    try:
+        doc = json.loads(stdout)
+    except ValueError:
+        return None
+    if isinstance(doc, list):  # the array form; see validate.extract_structured
+        results = [m for m in doc if isinstance(m, dict) and m.get("type") == "result"]
+        doc = results[-1] if results else None
+    return doc if isinstance(doc, dict) else None
+
+
+_RESULT_WORD = re.compile(r"[a-z_]{1,40}")
+
+
+def describe_failed_result(stdout: str) -> str:
+    """The top-level fields Claude Code writes about how a run ended
+    (subtype, terminal_reason, api_error_status, num_turns), for a failure's
+    detail, or "" when stdout holds no result object. A value of an
+    unexpected shape is left out, and the model's own text ("result",
+    "structured_output") is never read, so the detail can be logged and
+    posted."""
+    doc = _result_document(stdout)
+    if doc is None:
+        return ""
+    parts = [f"{key} {doc[key]}" for key in ("subtype", "terminal_reason")
+             if isinstance(doc.get(key), str) and _RESULT_WORD.fullmatch(doc[key])]
+    status = doc.get("api_error_status")
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        parts.append(f"API status {status}")
+    turns = doc.get("num_turns")
+    if isinstance(turns, int) and not isinstance(turns, bool) and turns >= 0:
+        parts.append(f"{turns} turn{'' if turns == 1 else 's'}")
+    return ", ".join(parts)
+
+
+def _count(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def describe_usage(stdout: str) -> str:
+    """Turns, tokens, list-price cost and duration from the top-level fields
+    of Claude Code's result, or "" when stdout holds no result object. Only
+    numbers are read; a value that is not one is left out."""
+    doc = _result_document(stdout)
+    if doc is None:
+        return ""
+    parts = []
+    turns = _count(doc.get("num_turns"))
+    if turns is not None:
+        parts.append(f"{turns} turn{'' if turns == 1 else 's'}")
+    usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
+    fresh, read, write, out = (_count(usage.get(k)) for k in (
+        "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+        "output_tokens"))
+    if None not in (fresh, read, write):
+        parts.append(f"{fresh + read + write} input tokens ({read} read from the cache, "
+                     f"{write} written to it, {fresh} uncached)")
+    if out is not None:
+        parts.append(f"{out} output tokens")
+    cost = doc.get("total_cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0:
+        parts.append(f"${cost:.4f} at list price")
+    ms = _count(doc.get("duration_ms"))
+    if ms is not None:
+        parts.append(f"{ms / 1000:.1f}s")
+    return ", ".join(parts)
+
+
 def api_environment_error(stdout: str) -> int | None:
     """The API status of a reviewer run that failed because of the Anthropic
     API or the token rather than the pull request, else None.
@@ -44,14 +114,8 @@ def api_environment_error(stdout: str) -> int | None:
     terminal_reason, api_error_status); the model's own text is in
     "result" and "structured_output" and is not looked at.
     """
-    try:
-        doc = json.loads(stdout)
-    except ValueError:
-        return None
-    if isinstance(doc, list):  # the array form; see validate.extract_structured
-        results = [m for m in doc if isinstance(m, dict) and m.get("type") == "result"]
-        doc = results[-1] if results else None
-    if not isinstance(doc, dict) or doc.get("is_error") is not True:
+    doc = _result_document(stdout)
+    if doc is None or doc.get("is_error") is not True:
         return None
     if doc.get("terminal_reason") != "api_error":
         return None
@@ -162,6 +226,9 @@ def run_reviewer(names, work: Path, repo: str, number: int, *, uid: int, gid: in
              result.duration, " (timed out)" if result.timed_out else "",
              len(result.stdout))
     log.debug("reviewer stderr:\n%s", result.stderr)
+    usage = describe_usage(result.stdout)
+    if usage:
+        log.info("reviewer usage for %s#%d: %s", repo, number, usage)
     status = None if result.timed_out else api_environment_error(result.stdout)
     if status is not None:
         raise dockerrun.EnvironmentFailure(
@@ -169,5 +236,8 @@ def run_reviewer(names, work: Path, repo: str, number: int, *, uid: int, gid: in
     if result.ok:
         return result
     log.error("reviewer stderr tail:\n%s", dockerrun.tail(result.stderr))
+    if result.timed_out:
+        raise dockerrun.PullRequestFailure(f"reviewer exit {result.returncode} (timeout)")
+    how = describe_failed_result(result.stdout)
     raise dockerrun.PullRequestFailure(
-        f"reviewer exit {result.returncode}{' (timeout)' if result.timed_out else ''}")
+        f"reviewer exit {result.returncode}{f' ({how})' if how else ''}")
