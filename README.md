@@ -165,7 +165,7 @@ orchestrator reads, with its default:
 | `REVIEWBOT_DRY_RUN` | `1` prints the review instead of posting it | `1` in the shipped env file |
 | `REVIEWBOT_MODEL` | model for the review container | `opus` |
 | `REVIEWBOT_GITHUB_API_URL` | GitHub REST API base URL; the tests point it at a local fake | `https://api.github.com` |
-| `REVIEWBOT_MAX_TURNS` | Claude Code `--max-turns` for a review, 1 to 9999 | 40 |
+| `REVIEWBOT_MAX_TURNS` | Claude Code `--max-turns` for a review, 1 to 9999 | 500 |
 | `REVIEWBOT_PROMPT_FILE` | a file of review instructions that replaces the reviewer image's `reviewer/review.md` ("Customizing the review"); read for each review, at most 64 KiB of UTF-8 | unset |
 | `REVIEWBOT_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING` or `ERROR` (any case) | `INFO` |
 | `REVIEWBOT_KEEP_WORK` | `1` keeps each review's scratch directory instead of deleting it | `0` |

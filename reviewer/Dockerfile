@@ -59,8 +59,9 @@ COPY --from=schema --chmod=0444 schema.json /opt/reviewbot/
 COPY --chmod=0555 entrypoint.sh /opt/reviewbot/entrypoint.sh
 RUN test "$(/usr/local/bin/claude --version)" = "${CLAUDE_VERSION} (Claude Code)"
 
-# The constants of the reviewer's environment; the orchestrator passes only
-# REVIEWBOT_MODEL and REVIEWBOT_MAX_TURNS, and entrypoint.sh sets the stand-in
+# The constants of the reviewer's environment. The orchestrator passes
+# REVIEWBOT_MODEL and REVIEWBOT_MAX_TURNS on every run (their defaults are in
+# orchestrator/src/reviewbot/config.py), and entrypoint.sh sets the stand-in
 # CLAUDE_CODE_OAUTH_TOKEN. ANTHROPIC_BASE_URL is the "proxy" alias on the
 # internal network.
 ENV ANTHROPIC_BASE_URL=http://proxy:8080 \
@@ -70,9 +71,7 @@ ENV ANTHROPIC_BASE_URL=http://proxy:8080 \
     DISABLE_TELEMETRY=1 \
     DISABLE_ERROR_REPORTING=1 \
     ENABLE_CLAUDEAI_MCP_SERVERS=false \
-    CLAUDE_CODE_DISABLE_ARTIFACT=1 \
-    REVIEWBOT_MODEL=opus \
-    REVIEWBOT_MAX_TURNS=500
+    CLAUDE_CODE_DISABLE_ARTIFACT=1
 
 USER ${REVIEWER_UID}:${REVIEWER_UID}
 WORKDIR /work

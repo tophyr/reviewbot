@@ -46,8 +46,15 @@ def _reviewer_id(env: dict[str, str], name: str) -> int | None:
 MODEL_RE = re.compile(r"[A-Za-z0-9][]A-Za-z0-9._:@[-]{0,99}")
 
 
+# The reviewer's settings when REVIEWBOT_MODEL and REVIEWBOT_MAX_TURNS are
+# unset. The orchestrator passes both to every reviewer run; the reviewer
+# image has no defaults of its own.
+DEFAULT_MODEL = "opus"
+DEFAULT_MAX_TURNS = 500
+
+
 def _model(env: dict[str, str]) -> str:
-    value = env.get("REVIEWBOT_MODEL") or "opus"  # the entrypoint also maps empty to opus
+    value = env.get("REVIEWBOT_MODEL") or DEFAULT_MODEL
     if not MODEL_RE.fullmatch(value):
         raise ConfigError(f"REVIEWBOT_MODEL {value!r} is not accepted by the reviewer entrypoint "
                           "(letters, digits and ._:@[]- only, not starting with a symbol, "
@@ -180,7 +187,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         model=_model(env),
         # reviewer/entrypoint.sh accepts 1 to 9999; refuse anything else at
         # startup rather than in every review.
-        max_turns=_int(env, "REVIEWBOT_MAX_TURNS", 40, minimum=1, maximum=9999),
+        max_turns=_int(env, "REVIEWBOT_MAX_TURNS", DEFAULT_MAX_TURNS, minimum=1, maximum=9999),
         reviewer_uid=_reviewer_id(env, "REVIEWBOT_REVIEWER_UID"),
         reviewer_gid=_reviewer_id(env, "REVIEWBOT_REVIEWER_GID"),
         docker=docker_names(env),

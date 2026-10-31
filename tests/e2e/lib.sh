@@ -317,6 +317,13 @@ reviewer_user() {
 run_reviewer() {
   local work="$1" out="$2" err="$3"
   shift 3
+  # The orchestrator's defaults for the two settings it passes, unless the
+  # environment overrides them.
+  local defaults model turns
+  defaults="$("$PY" -I -c 'from reviewbot import config; print(config.DEFAULT_MODEL, config.DEFAULT_MAX_TURNS)')" \
+    || { log "cannot read the reviewer defaults from the orchestrator's config.py"; exit 2; }
+  model="${REVIEWBOT_MODEL:-${defaults% *}}"
+  turns="${REVIEWBOT_MAX_TURNS:-${defaults#* }}"
   local user uid gid
   user="$(reviewer_user)"
   uid="${user%%:*}"
@@ -326,7 +333,7 @@ run_reviewer() {
     --tmpfs /tmp --tmpfs "/home/reviewer:uid=$uid,gid=$gid,mode=0700" \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 4g --cpus 2 \
     -v "$work:/work:ro" \
-    -e REVIEWBOT_MODEL="${REVIEWBOT_MODEL:-opus}" -e REVIEWBOT_MAX_TURNS="${REVIEWBOT_MAX_TURNS:-40}" \
+    -e REVIEWBOT_MODEL="$model" -e REVIEWBOT_MAX_TURNS="$turns" \
     "$@" >"$out" 2>"$err" || rc=$?
   return "$rc"
 }

@@ -210,7 +210,8 @@ def test_posts_review(tmp_path, monkeypatch):
     # the fetcher got the scoped token, the reviewer only the dummy
     assert h.fetch_calls[0][2] == FETCH_TOKEN
     rc = h.review_calls[0]
-    assert rc["env"] == {"REVIEWBOT_MODEL": "opus", "REVIEWBOT_MAX_TURNS": "40"}
+    assert rc["env"] == {"REVIEWBOT_MODEL": config_mod.DEFAULT_MODEL,
+                         "REVIEWBOT_MAX_TURNS": str(config_mod.DEFAULT_MAX_TURNS)}
     assert REAL not in json.dumps(rc["env"]) and ORCH_TOKEN not in json.dumps(rc["env"])
     assert (rc["uid"], rc["network"]) == (10001, h.cfg.docker.internal_network)
     assert rc["files"] == ["diff.patch", "files.txt", "pr.json", "repo"]

@@ -76,6 +76,19 @@ def test_proxy_lifetime_exceeds_the_longest_review():
     assert proxy.MAX_LIFETIME_SECONDS > longest
 
 
+@pytest.mark.parametrize("given, missing", [
+    ({}, "REVIEWBOT_MODEL"),
+    ({"REVIEWBOT_MODEL": "opus"}, "REVIEWBOT_MAX_TURNS"),
+    ({"REVIEWBOT_MAX_TURNS": "500"}, "REVIEWBOT_MODEL"),
+])
+def test_reviewer_entrypoint_refuses_to_run_without_the_orchestrators_settings(given, missing):
+    script = os.path.join(REPO, "reviewer", "entrypoint.sh")
+    r = subprocess.run(["bash", script], env={"PATH": os.environ["PATH"], **given},
+                       capture_output=True, text=True, timeout=10)
+    assert r.returncode == 64
+    assert r.stderr == f"reviewbot-reviewer: {missing} is not set; the orchestrator passes it\n"
+
+
 def test_dockerfile_env_parser_reads_continued_env_lines():
     text = "FROM x\nENV A=1 \\\n    B=two\nRUN true\nENV C=3\n"
     assert dockerfile_env(text) == {"A": "1", "B": "two", "C": "3"}
@@ -85,6 +98,8 @@ def test_reviewer_image_sets_the_constants_the_host_relies_on():
     with open(os.path.join(REPO, "reviewer", "Dockerfile"), encoding="utf-8") as fh:
         env = dockerfile_env(fh.read())
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env  # the entrypoint sets it
+    # the orchestrator passes these, with config.py's defaults
+    assert "REVIEWBOT_MODEL" not in env and "REVIEWBOT_MAX_TURNS" not in env
     with open(os.path.join(REPO, "reviewer", "entrypoint.sh"), encoding="utf-8") as fh:
         assert f"\nexport CLAUDE_CODE_OAUTH_TOKEN={review.DUMMY_TOKEN}\n" in fh.read()
     assert env["ANTHROPIC_BASE_URL"] == f"http://{dockerrun.PROXY_ALIAS}:8080"

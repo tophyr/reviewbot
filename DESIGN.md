@@ -201,7 +201,11 @@ passed to the container. The image's `ENV` sets the other constants:
 - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_TELEMETRY=1`,
   `DISABLE_ERROR_REPORTING=1`, `DISABLE_AUTOUPDATER=1`, `DISABLE_UPDATES=1`,
   `ENABLE_CLAUDEAI_MCP_SERVERS=false`, `CLAUDE_CODE_DISABLE_ARTIFACT=1`
-- defaults `REVIEWBOT_MODEL=opus` and `REVIEWBOT_MAX_TURNS=40`
+
+The image sets neither `REVIEWBOT_MODEL` nor `REVIEWBOT_MAX_TURNS`, and the
+entrypoint exits 64 when either is missing. Their defaults, `opus` and 500,
+are `config.DEFAULT_MODEL` and `config.DEFAULT_MAX_TURNS`, and the
+orchestrator passes both on every run.
 
 The orchestrator passes only `REVIEWBOT_MODEL`, `REVIEWBOT_MAX_TURNS` and,
 when `REVIEWBOT_PROMPT_FILE` is set, `REVIEWBOT_PROMPT`, by name (`-e NAME`;

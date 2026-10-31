@@ -12,8 +12,14 @@ if [ "$#" -ne 0 ]; then
   exit 64
 fi
 
-REVIEWBOT_MODEL="${REVIEWBOT_MODEL:-opus}"
-REVIEWBOT_MAX_TURNS="${REVIEWBOT_MAX_TURNS:-40}"
+# The orchestrator passes both on every run; their defaults are in its
+# config.py, and the image sets neither.
+for name in REVIEWBOT_MODEL REVIEWBOT_MAX_TURNS; do
+  if [ -z "${!name:-}" ]; then
+    echo "reviewbot-reviewer: $name is not set; the orchestrator passes it" >&2
+    exit 64
+  fi
+done
 
 # Both values are passed as single argv entries, so they cannot inject shell
 # syntax. These checks stop a value that starts with "-" from being parsed
