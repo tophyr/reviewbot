@@ -514,7 +514,7 @@ def test_stale_containers_are_removed_at_startup(cli_env, tmp_path, capsys):
     assert fd.removed() == ["id0", "id1", "id2"]  # by id
     err = capsys.readouterr().err
     for name in STALE_MATCHING:
-        assert (f"WARNING reviewbot.dockerrun: removing container {name} "
+        assert (f"WARNING removing container {name} "
                 "left by an earlier run") in err
     assert err.count("removing container") == 3
 

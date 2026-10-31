@@ -33,6 +33,10 @@ class Outcome:
 
 # Outcomes that are not recorded against the pull request.
 NOT_RECORDED = ("environment", "stopped", "capped")
+# The level of the one log line each review's outcome gets; any other status
+# is logged at INFO.
+OUTCOME_LEVELS = {"failed": logging.ERROR, "refused": logging.ERROR,
+                  "environment": logging.ERROR, "stopped": logging.WARNING}
 
 # GitHub statuses on a token request that are not caused by the pull request.
 TOKEN_ENVIRONMENT_STATUSES = (401, 403, 429)
@@ -60,7 +64,6 @@ class Context:
             self._uid_gid = review.resolve_uid_gid(
                 self.config.docker.reviewer_image, self.config.reviewer_uid,
                 self.config.reviewer_gid)
-            log.info("reviewer tmpfs uid/gid %d:%d", *self._uid_gid)
         return self._uid_gid
 
 
@@ -209,7 +212,6 @@ def _review_in(ctx: Context, pr_json: dict, work: Path) -> Outcome:
 
     result = validate.validate_review(rres.stdout, secrets, build_payload=build)
     if not result.ok:
-        log.error("review output for %s#%d %s; nothing posted", repo, number, result)
         # A review that is only too long (step 4) holds no leak and the next
         # run may be shorter, so it is retried; a token in it is final.
         status = "failed" if result.step == 1 or result.code == "too_long" else "refused"
@@ -234,7 +236,6 @@ def _review_in(ctx: Context, pr_json: dict, work: Path) -> Outcome:
 
     resp = post.post_review(ctx.api, post_token, repo, number, payload,
                             rebuild_without_inline=rebuild_without_inline)
-    log.info("posted review %s on %s#%d", resp.get("id"), repo, number)
     return Outcome("posted", f"review {resp.get('id')}")
 
 
@@ -250,7 +251,8 @@ def run_and_record(ctx: Context, pr_json: dict) -> Outcome:
     """
     key = discovery.state_key(pr_json)
     outcome = _run_and_record(ctx, key, pr_json)
-    log.info("%s at %s: %s %s", key, pr_json["head_sha"][:12], outcome.status, outcome.detail)
+    log.log(OUTCOME_LEVELS.get(outcome.status, logging.INFO), "%s at %s: %s %s", key,
+            pr_json["head_sha"][:12], outcome.status, outcome.detail)
     return outcome
 
 
@@ -262,16 +264,12 @@ def _run_and_record(ctx: Context, key: str, pr_json: dict) -> Outcome:
     try:
         outcome = review_pr(ctx, pr_json)
     except dockerrun.Stopped as exc:
-        log.warning("review of %s stopped (%s); not recorded, it is retried after restart",
-                    key, exc)
         return Outcome("stopped", str(exc))
     except dockerrun.SetupError:
         raise
     except dockerrun.EnvironmentFailure as exc:
-        log.error("review of %s hit an environment failure; not counted against it: %s", key, exc)
         return Outcome("environment", str(exc))
     except dockerrun.PullRequestFailure as exc:
-        log.error("review of %s failed: %s", key, exc)
         outcome = Outcome("failed", str(exc), public=True)
     except Exception as exc:
         log.exception("review of %s failed", key)

@@ -224,7 +224,9 @@ after adding or changing `REVIEWBOT_PROMPT_FILE`, run
 
 ## Day to day
 
-- Logs: `journalctl --user -u reviewbot -f`. The fetcher, review and proxy
+- Logs: `journalctl --user -u reviewbot -f`. Each line carries its level as
+  the journal priority, so `journalctl --user -u reviewbot -p warning` shows
+  only warnings and errors. The fetcher, review and proxy
   containers exist only during a review and have no log driver, so their
   output is not kept, except the proxy's: before it removes the proxy, the
   orchestrator copies the proxy's log lines with status 403 (requests the

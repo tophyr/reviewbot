@@ -316,6 +316,28 @@ def test_failure_notice_that_cannot_be_posted_keeps_the_outcome(tmp_path, monkey
     assert "could not post the failure notice on Owner/Repo#7" in caplog.text
 
 
+@pytest.mark.parametrize("kind, status, level", [
+    ("good", "posted", "INFO"),
+    ("leak", "refused", "ERROR"),
+    ("reviewer exit", "failed", "ERROR"),
+])
+def test_each_outcome_is_logged_once_at_its_level(tmp_path, monkeypatch, caplog, kind, status,
+                                                  level):
+    caplog.set_level(logging.INFO)
+    leak = json.dumps({"type": "result", "is_error": False,
+                       "structured_output": structured(" " + REAL)})
+    h = Harness(tmp_path, monkeypatch, stdout=leak if kind == "leak" else None,
+                review_rc=1 if kind == "reviewer exit" else 0)
+    assert pipeline.run_and_record(h.ctx, h.pr_json()).status == status
+    prefix = f"Owner/Repo#7 at {HEAD[:12]}: "
+    lines = [(r.levelname, r.getMessage()[len(prefix):].split(" ", 1)[0])
+             for r in caplog.records if r.getMessage().startswith(prefix)]
+    assert lines == [(level, status)]
+    # and no other line repeats the outcome
+    assert "posted review" not in caplog.text.replace(prefix + "posted review", "")
+    assert "nothing posted" not in caplog.text and "review of Owner/Repo#7" not in caplog.text
+
+
 def test_reviewer_failure_counts_against_cap(tmp_path, monkeypatch):
     h = Harness(tmp_path, monkeypatch, review_rc=1)
     out = pipeline.run_and_record(h.ctx, h.pr_json())

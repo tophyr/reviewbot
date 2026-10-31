@@ -10,6 +10,7 @@ written out.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 
@@ -70,11 +71,42 @@ class RedactingFilter(logging.Filter):
         return True
 
 
+class JournalFormatter(logging.Formatter):
+    """The message alone, every line prefixed with its syslog priority.
+
+    journald adds the time and the process to each line, and with the unit's
+    default SyslogLevelPrefix=yes it stores a line's "<N>" prefix as that
+    entry's priority. Each line of a multi-line message is its own entry, so
+    each gets the prefix; journald strips only the first one, so a line that
+    already began with a prefix (in a container's output) keeps ours.
+    """
+
+    PRIORITIES = {logging.DEBUG: 7, logging.INFO: 6, logging.WARNING: 4,
+                  logging.ERROR: 3, logging.CRITICAL: 2}
+
+    def format(self, record: logging.LogRecord) -> str:
+        prefix = f"<{self.PRIORITIES.get(record.levelno, 6)}>"
+        return "\n".join(prefix + line for line in super().format(record).split("\n"))
+
+
+def stream_is_journal(stream) -> bool:
+    """True when stream is connected to the journal. systemd sets
+    JOURNAL_STREAM to that connection's device and inode, and the variable
+    alone is not enough: a process can inherit it with another stderr."""
+    expected = os.environ.get("JOURNAL_STREAM", "")
+    try:
+        st = os.fstat(stream.fileno())
+    except (OSError, ValueError):
+        return False
+    return bool(expected) and expected == f"{st.st_dev}:{st.st_ino}"
+
+
 def setup_logging(level: str = "INFO") -> None:
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    )
+    if stream_is_journal(sys.stderr):
+        handler.setFormatter(JournalFormatter("%(message)s"))
+    else:
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     handler.addFilter(RedactingFilter())
     root = logging.getLogger()
     root.handlers[:] = [handler]

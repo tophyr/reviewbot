@@ -114,7 +114,10 @@ def test_pull_request_failure_is_logged_once_without_a_traceback(tmp_path, monke
     ctx, api, state = setup(tmp_path)
     out = pipeline.run_and_record(ctx, pr_json())
     assert (out.status, out.detail) == ("failed", "fetch exit 1")
-    assert f"review of {KEY} failed: fetch exit 1" in caplog.text
+    # one line for the outcome, at ERROR
+    lines = [r for r in caplog.records if "fetch exit 1" in r.getMessage()]
+    assert [(r.levelname, r.getMessage()) for r in lines] == [
+        ("ERROR", f"{KEY} at {HEAD[:12]}: failed fetch exit 1")]
     assert "fetcher stderr tail:" in caplog.text
     assert "Traceback" not in caplog.text
 
@@ -229,8 +232,7 @@ def test_api_auth_rate_limit_and_server_errors_are_not_attempts(tmp_path, monkey
         assert f"Anthropic API error {status}" in out.detail
     assert state.entry(KEY) is None
     assert api.posts == []
-    assert (f"review of {KEY} hit an environment failure; not counted against it: "
-            f"Anthropic API error {status}") in caplog.text
+    assert f"{KEY} at {HEAD[:12]}: environment Anthropic API error {status}" in caplog.text
 
 
 def _assumed_404():
@@ -252,8 +254,8 @@ def test_api_model_not_found_is_not_an_attempt(tmp_path, monkeypatch, caplog):
         assert "Anthropic API error 404 (model not found)" in out.detail
     assert state.entry(KEY) is None
     assert api.posts == []
-    assert (f"review of {KEY} hit an environment failure; not counted against it: "
-            "Anthropic API error 404 (model not found)") in caplog.text
+    assert (f"{KEY} at {HEAD[:12]}: environment Anthropic API error 404 (model not found)"
+            in caplog.text)
 
 
 def test_api_error_ends_the_pass_before_the_next_pull_request(tmp_path, monkeypatch):

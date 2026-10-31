@@ -1,4 +1,6 @@
+import io
 import logging
+import sys
 
 import pytest
 from fakedocker import install
@@ -81,6 +83,47 @@ def test_log_redaction(capsys):
     err = capsys.readouterr().err
     assert secret not in err
     assert "token=[REDACTED] end" in err
+
+
+def _journal_id(fh):
+    st = __import__("os").fstat(fh.fileno())
+    return f"{st.st_dev}:{st.st_ino}"
+
+
+def test_stderr_counts_as_the_journal_only_when_journal_stream_matches_it(monkeypatch, tmp_path):
+    with open(tmp_path / "a", "w") as a, open(tmp_path / "b", "w") as b:
+        monkeypatch.delenv("JOURNAL_STREAM", raising=False)
+        assert not logutil.stream_is_journal(a)
+        monkeypatch.setenv("JOURNAL_STREAM", _journal_id(a))
+        assert logutil.stream_is_journal(a)
+        assert not logutil.stream_is_journal(b)  # inherited variable, other stderr
+    assert not logutil.stream_is_journal(io.StringIO())  # no file descriptor
+
+
+def test_journal_format_prefixes_every_line_with_the_priority():
+    fmt = logutil.JournalFormatter("%(message)s")
+
+    def line(level, msg):
+        return fmt.format(logging.LogRecord("t", level, __file__, 1, msg, None, None))
+    assert line(logging.INFO, "posted") == "<6>posted"
+    assert line(logging.WARNING, "retrying") == "<4>retrying"
+    # a container's output that starts with a prefix cannot change its priority
+    assert line(logging.ERROR, "fetcher stderr tail:\n<0>forged\nlast") == \
+        "<3>fetcher stderr tail:\n<3><0>forged\n<3>last"
+
+
+def test_logging_to_the_journal_writes_only_the_message(monkeypatch, tmp_path):
+    secret = "registered-secret-" + "j" * 20
+    # setup_logging fills the root logger's handler list in place; a list of
+    # this test's own keeps its handler, and the file it writes, from outliving it
+    monkeypatch.setattr(logging.getLogger(), "handlers", [])
+    with open(tmp_path / "journal", "w") as fh:
+        monkeypatch.setattr(sys, "stderr", fh)
+        monkeypatch.setenv("JOURNAL_STREAM", _journal_id(fh))
+        logutil.setup_logging("INFO")
+        logutil.register_secret(secret)
+        logging.getLogger("reviewbot.pipeline").warning("token=%s end", secret)
+    assert (tmp_path / "journal").read_text() == "<4>token=[REDACTED] end\n"
 
 
 @pytest.mark.parametrize("name", ["REVIEWBOT_REVIEWER_UID", "REVIEWBOT_REVIEWER_GID"])
