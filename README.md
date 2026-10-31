@@ -205,10 +205,10 @@ touches docker.
 ## Customizing the review
 
 The reviewer's system prompt has two parts. `reviewer/rules.md` is fixed: it
-covers the inputs, that pull request content is untrusted, how comments cite
-lines, and what never to include. `reviewer/review.md` holds the review
-instructions: what to look for, what each severity means and how to choose
-the verdict.
+covers the inputs, that pull request content is untrusted, how the summary
+and comments are posted together, how comments cite lines, and what never to
+include. `reviewer/review.md` holds the review instructions: what to look
+for, what each severity means and how to choose the verdict.
 
 The image holds a copy of `reviewer/review.md` made when it was built, so
 editing that file in the checkout changes nothing until `deploy/install.sh`

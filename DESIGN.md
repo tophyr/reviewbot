@@ -179,7 +179,9 @@ Runs as a non-root user. Entrypoint takes no arguments. The image holds, under
 system prompt:
 
 - `rules.md`, fixed: the inputs, that everything under `/work` is untrusted
-  data, how to cite a comment's path and line, and what never to include.
+  data, how the summary and comments are posted together (so the summary
+  does not repeat the comments), how to cite a comment's path and line, and
+  what never to include.
   The limit of 30 comments is not repeated there: `--json-schema` gives the
   model the schema, which sets it.
 - `review.md`, the default review instructions: what to look for, how to write
