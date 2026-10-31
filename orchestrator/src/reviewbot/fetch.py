@@ -21,6 +21,8 @@ MAX_FILES_BYTES = 10 * 1024 * 1024
 # string over 128 KiB (MAX_ARG_STRLEN) and json.dumps writes each non-ASCII
 # character as 6 bytes, so a pull request body would break the docker start.
 # The orchestrator writes the full pr.json itself after the fetcher succeeds.
+# PR_JSON also holds prev_sha when an earlier head of the pull request was
+# reviewed (see run_fetcher).
 FETCHER_FIELDS = ("repo", "number", "base_sha", "head_sha")
 # Seconds; above the fetcher's worst case of about 420: a transfer that stalls
 # for 300 plus two 60-second endpoint probes.
@@ -78,14 +80,21 @@ def build_argv(image: str, name: str, work: Path, max_fetch_mb: int) -> list[str
 
 
 def run_fetcher(names, work: Path, pr_json: dict, token: str,
-                timeout: float, max_fetch_mb: int) -> dockerrun.RunResult:
+                timeout: float, max_fetch_mb: int,
+                prev_sha: str | None = None) -> dockerrun.RunResult:
     """Run names.fetcher_image with repo, number, base_sha and head_sha in PR_JSON.
+
+    prev_sha, the head of the last posted review, is added to PR_JSON when
+    given; the fetcher then writes interdiff.patch under the conditions in
+    DESIGN.md ("Fetcher container contract").
 
     Raises EnvironmentFailure when github.com's git endpoint is unreachable
     (FETCHER_EXIT_GIT_UNREACHABLE), and PullRequestFailure on any other
     failure, after logging the fetcher's stderr tail.
     """
     fetch_input = {k: pr_json[k] for k in FETCHER_FIELDS}
+    if prev_sha:
+        fetch_input["prev_sha"] = prev_sha
     name = dockerrun.container_name(names.prefix, "fetch")
     argv = build_argv(names.fetcher_image, name, work, max_fetch_mb)
     env = {"GITHUB_TOKEN": token, "PR_JSON": json.dumps(fetch_input)}
@@ -127,32 +136,34 @@ def _read_regular(path: Path, limit: int) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def write_pr_json(work: Path, pr_json: dict) -> None:
-    """Write the full pr.json into WORK, mode 0644 so that the reviewer's
-    uid can read it (the service runs with UMask=0077).
+def write_json(work: Path, name: str, doc: dict) -> None:
+    """Write doc as WORK/name (pr.json or previous_review.json), mode 0644 so
+    that the reviewer's uid can read it (the service runs with UMask=0077).
 
     Called after the fetcher succeeds. The file must
     not exist yet: the fetcher does not write it. Raises FetchError if it
     does exist, and EnvironmentFailure if it cannot be written.
     """
-    data = (json.dumps(pr_json) + "\n").encode("utf-8")
+    data = (json.dumps(doc) + "\n").encode("utf-8")
     try:
         # "x" opens with O_CREAT | O_EXCL, which also refuses a symlink
         # planted in its place, even one whose target does not exist.
-        with open(work / "pr.json", "xb") as fh:
+        with open(work / name, "xb") as fh:
             os.fchmod(fh.fileno(), 0o644)
             fh.write(data)
     except FileExistsError as exc:
-        raise FetchError("pr.json already exists in the work directory; "
+        raise FetchError(f"{name} already exists in the work directory; "
                          "the fetcher must not write it") from exc
     except OSError as exc:
-        raise dockerrun.EnvironmentFailure(f"cannot write pr.json in {work}: {exc}") from exc
+        raise dockerrun.EnvironmentFailure(f"cannot write {name} in {work}: {exc}") from exc
 
 
 @dataclass
 class FetchedWork:
     diff_text: str
     files: set[str]
+    # The fetcher wrote interdiff.patch (only when it was given prev_sha).
+    has_interdiff: bool
 
 
 def read_fetch_output(work: Path) -> FetchedWork:
@@ -168,4 +179,4 @@ def read_fetch_output(work: Path) -> FetchedWork:
     # each NUL turned into a newline, and fails on a path that contains a
     # newline. The lines are not in git's quoted form and are used as they are.
     files = {line for line in files_text.split("\n") if line}
-    return FetchedWork(diff_text, files)
+    return FetchedWork(diff_text, files, os.path.lexists(work / "interdiff.patch"))

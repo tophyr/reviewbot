@@ -92,6 +92,18 @@ def skip_reason(pr: dict, skip_label: str) -> str | None:
     return None
 
 
+def request_pattern(slug: str) -> re.Pattern:
+    """A review request in a comment: "@<app slug> review", in any case."""
+    return re.compile(rf"(?<![\w-])@{re.escape(slug)}\s+review\b", re.IGNORECASE)
+
+
+def list_comments(api, token: str, repo: str, since: str) -> list[dict]:
+    """Issue comments of repo (pull request conversations included) updated
+    at or after since, oldest first."""
+    return list(api.paginate(f"/repos/{repo}/issues/comments", token,
+                             params={"since": since, "sort": "created", "direction": "asc"}))
+
+
 def list_open_prs(api, token: str, repo: str) -> list[dict]:
     return list(api.paginate(f"/repos/{repo}/pulls", token, params={"state": "open"}))
 

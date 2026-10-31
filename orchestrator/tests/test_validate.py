@@ -119,7 +119,7 @@ def _maximal_review(body):
 
 def _build(st):
     from reviewbot import post
-    return post.build_payload(st, "0" * 40, {}, set())
+    return post.build_payload(st, "0" * 40, {}, set(), slug="s" * 100)
 
 
 def test_schema_maximum_fits_under_the_limit():

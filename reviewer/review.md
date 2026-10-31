@@ -3,7 +3,10 @@
 ## What to review
 
 Focus on the lines the pull request adds or changes. Read surrounding code in
-`/work/repo` as needed to understand them. Look for:
+`/work/repo` as needed to understand them. When `/work/interdiff.patch`
+exists, give most attention to the changes in it, which were made after the
+earlier review, and to how they affect the rest of the pull request. Look
+for:
 
 1. Correctness: logic errors, off-by-one errors, wrong conditions, unhandled
    error paths, null or empty handling, resource leaks, race conditions,

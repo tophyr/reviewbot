@@ -29,6 +29,8 @@ class Outcome:
     # The detail is written by reviewbot (no container output or exception
     # text), so a failure notice on the pull request may quote it.
     public: bool = False
+    # posted: the structured review, kept in state as the last posted review.
+    review: dict | None = None
 
 
 # Outcomes that are not recorded against the pull request.
@@ -54,6 +56,7 @@ class Context:
     state: State
     real_token: str
     _uid_gid: tuple[int, int] | None = field(default=None, repr=False)
+    _slug: str | None = field(default=None, repr=False)
 
     @property
     def api(self):
@@ -66,6 +69,20 @@ class Context:
                 self.config.reviewer_gid)
         return self._uid_gid
 
+    def app_slug(self) -> str:
+        """The GitHub App's slug, which review request comments mention.
+        Raises GitHubError when it cannot be read or is not a slug, since it
+        is written into review bodies inside a code span."""
+        if self._slug is None:
+            slug = self.auth.app_info().get("slug")
+            if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug):
+                raise GitHubError(None, f"GET /app returned an unexpected slug {slug!r:.80}")
+            self._slug = slug
+        return self._slug
+
+
+# A GitHub App slug: lowercase letters, digits and hyphens.
+SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 # Names make_work_dir gives: <repo slug>__<number>__<sha12>__<8 hex>
 WORK_NAME_RE = re.compile(r".+__[0-9]+__[0-9a-f]{12}__[0-9a-f]{8}")
@@ -170,21 +187,39 @@ def _review_in(ctx: Context, pr_json: dict, work: Path) -> Outcome:
     repo, number, head_sha = pr_json["repo"], pr_json["number"], pr_json["head_sha"]
     orchestrator_token = _token(ctx.auth.token_for_repo, repo)
     fetch_token = _token(ctx.auth.fetch_token_for_repo, repo)
+    try:
+        slug = ctx.app_slug()  # read before the reviewer runs, for the review footer
+    except GitHubError as exc:
+        raise dockerrun.EnvironmentFailure(f"cannot read the app slug: {exc}") from exc
+    prev = ctx.state.last_posted(discovery.state_key(pr_json))
+    if prev and prev["head_sha"] == head_sha:
+        prev = None  # a second review of the same head (the review command) starts afresh
 
     # fetch
     fetch.run_fetcher(cfg.docker, work, pr_json, fetch_token,
-                      fetch.FETCH_TIMEOUT, fetch.MAX_FETCH_MB)
-    # The fetcher gets only repo, number and the two shas; the full pr.json
-    # is written here.
-    fetch.write_pr_json(work, pr_json)
+                      fetch.FETCH_TIMEOUT, fetch.MAX_FETCH_MB,
+                      prev_sha=prev["head_sha"] if prev else None)
+    # The fetcher gets only repo, number and the shas; the full pr.json and
+    # the previous review are written here.
+    if prev:
+        fetch.write_json(work, "previous_review.json",
+                         {"head_sha": prev["head_sha"], **prev["review"]})
+    fetch.write_json(work, "pr.json", pr_json)
     fetched = fetch.read_fetch_output(work)
     if not fetched.files:
         log.info("%s#%d changes no files at %s; not running the reviewer", repo, number,
                  head_sha[:12])
         return Outcome("skipped", "no changed files")
     dmap = parse_diff(fetched.diff_text)
-    log.info("%s#%d: %d changed files, %d with commentable lines", repo, number,
-             len(fetched.files), sum(1 for p, s in dmap.items() if s and p in fetched.files))
+    if not prev:
+        since = "no earlier review"
+    elif fetched.has_interdiff:
+        since = f"interdiff from the review of {prev['head_sha'][:12]}"
+    else:
+        since = f"earlier review of {prev['head_sha'][:12]}, no interdiff"
+    log.info("%s#%d: %d changed files, %d with commentable lines, %s", repo, number,
+             len(fetched.files), sum(1 for p, s in dmap.items() if s and p in fetched.files),
+             since)
 
     # review (counts against the hourly cap from here on)
     ctx.state.note_review_started()
@@ -207,7 +242,7 @@ def _review_in(ctx: Context, pr_json: dict, work: Path) -> Outcome:
                                github_tokens=[orchestrator_token, fetch_token, post_token])
 
     def build(structured, relocate_all=False):
-        return post.build_payload(structured, head_sha, dmap, fetched.files,
+        return post.build_payload(structured, head_sha, dmap, fetched.files, slug=slug,
                                   relocate_all=relocate_all)
 
     result = validate.validate_review(rres.stdout, secrets, build_payload=build)
@@ -236,7 +271,7 @@ def _review_in(ctx: Context, pr_json: dict, work: Path) -> Outcome:
 
     resp = post.post_review(ctx.api, post_token, repo, number, payload,
                             rebuild_without_inline=rebuild_without_inline)
-    return Outcome("posted", f"review {resp.get('id')}")
+    return Outcome("posted", f"review {resp.get('id')}", review=result.structured)
 
 
 def run_and_record(ctx: Context, pr_json: dict) -> Outcome:
@@ -274,7 +309,8 @@ def _run_and_record(ctx: Context, key: str, pr_json: dict) -> Outcome:
     except Exception as exc:
         log.exception("review of %s failed", key)
         outcome = Outcome("failed", f"{type(exc).__name__}: {exc}")
-    ctx.state.record(key, pr_json["head_sha"], outcome.status, outcome.detail)
+    ctx.state.record(key, pr_json["head_sha"], outcome.status, outcome.detail,
+                     review=outcome.review)
     ctx.state.save()
     notice = _final_notice(ctx, key, pr_json["head_sha"], outcome)
     if notice:
@@ -320,10 +356,79 @@ def skip_reason(ctx: Context, cand: discovery.Candidate) -> str | None:
                                               max_attempts=MAX_ATTEMPTS)
 
 
+# How far back the first comment poll of a repository reads, in seconds.
+FIRST_POLL_WINDOW = 600
+
+
+def take_review_requests(ctx: Context, listing: discovery.Listing) -> list[str]:
+    """Read new comments in the repositories that have open pull requests and
+    mark each pull request that a comment asks to review (see
+    discovery.request_pattern). Returns the repositories whose comments could
+    not be read; their polling position is kept, so the next pass reads the
+    comments again."""
+    state, failures = ctx.state, []
+    open_prs: dict[str, dict[int, discovery.Candidate]] = {}
+    for cand in listing.candidates:
+        open_prs.setdefault(cand.repo, {})[cand.number] = cand
+    state.forget_comment_positions(set(open_prs), listing.listed)
+    if not open_prs:
+        return failures
+    try:
+        slug = ctx.app_slug()
+    except GitHubError as exc:
+        log.error("cannot read the app slug, so review requests are not read: %s", exc)
+        return [f"app slug: {exc}"]
+    pattern, own_login = discovery.request_pattern(slug), f"{slug}[bot]"
+    first_since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - FIRST_POLL_WINDOW))
+    for repo, prs in open_prs.items():
+        since, after_id = state.comment_position(repo)
+        since = since or first_since
+        try:
+            comments = discovery.list_comments(ctx.api, ctx.auth.token_for_repo(repo), repo, since)
+        except Exception as exc:  # one broken repo must not stop the pass
+            log.error("listing comments for %s failed: %s", repo, exc)
+            failures.append(f"{repo} comments: {exc}")
+            continue
+        new_since, new_after = since, after_id
+        for c in comments:
+            new_since = max(new_since, c["updated_at"])
+            if c["id"] <= after_id:
+                continue  # read on an earlier pass, or an edit of an older comment
+            new_after = max(new_after, c["id"])
+            login = (c.get("user") or {}).get("login", "")
+            if login == own_login or not pattern.search(c.get("body") or ""):
+                continue
+            cand = prs.get(int(c["issue_url"].rsplit("/", 1)[1]))
+            if cand:  # otherwise an issue or a closed pull request
+                _take_request(ctx, cand, c["id"], login)
+        state.set_comment_position(repo, new_since, new_after)
+    state.save()
+    return failures
+
+
+def _take_request(ctx: Context, cand: discovery.Candidate, comment_id: int, login: str) -> None:
+    """Act on a review request: mark the pull request, or log why not."""
+    if cand.skip:
+        log.info("%s: review request by %s ignored: %s", cand.key, login, cand.skip)
+        return
+    if ctx.state.entry(cand.key) is None:
+        log.info("%s: review request by %s: not reviewed yet, so its first review is "
+                 "pending anyway", cand.key, login)
+        return
+    done = ctx.state.head_done(cand.key, cand.head_sha, dry_run=ctx.config.dry_run,
+                               max_attempts=MAX_ATTEMPTS)
+    if done:
+        log.info("%s: review request by %s ignored: %s", cand.key, login, done)
+        return
+    ctx.state.request_review(cand.key, comment_id, login)
+    log.info("%s: review requested by %s (comment %d)", cand.key, login, comment_id)
+
+
 @dataclass
 class PassResult:
     reviews: list[tuple[str, Outcome]]
-    # Repositories or installations whose pull requests could not be listed.
+    # Repositories or installations whose pull requests or comments could not
+    # be listed.
     listing_failures: list[str]
 
 
@@ -335,6 +440,7 @@ def one_pass(ctx: Context) -> PassResult:
     if gone:
         ctx.state.save()
         log.info("removed the state of %d closed pull requests: %s", len(gone), ", ".join(gone))
+    comment_failures = take_review_requests(ctx, listing)
     for cand in listing.candidates:
         if dockerrun.STOP.is_set():
             log.info("stop requested; not starting another review")
@@ -347,4 +453,4 @@ def one_pass(ctx: Context) -> PassResult:
         results.append((cand.key, outcome))
         if outcome.status in NOT_RECORDED:
             break  # the next review would meet the same environment, stop or cap
-    return PassResult(results, listing.failures)
+    return PassResult(results, listing.failures + comment_failures)

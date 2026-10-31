@@ -51,22 +51,60 @@ def test_seconds_until_slot_with_more_runs_than_cap(tmp_path):
 def test_should_skip(tmp_path):
     s = State(tmp_path / "state.json")
     k = "o/r#1"
-    assert s.should_skip(k, "a" * 40, dry_run=False, max_attempts=3) is None
+
+    def skip(head, dry_run=False):
+        return s.should_skip(k, head * 40, dry_run=dry_run, max_attempts=3)
+
+    assert skip("a") is None  # never seen
     s.record(k, "a" * 40, "posted", now=T0)
-    assert s.should_skip(k, "a" * 40, dry_run=False, max_attempts=3)
-    assert s.should_skip(k, "b" * 40, dry_run=False, max_attempts=3) is None
-    s.record(k, "b" * 40, "dry_run", now=T0)
-    assert s.should_skip(k, "b" * 40, dry_run=True, max_attempts=3)
-    assert s.should_skip(k, "b" * 40, dry_run=False, max_attempts=3) is None
+    assert "already posted" in skip("a")
+    assert "only on request" in skip("b")  # a push after a review
+    s.request_review(k, 5, "anyone")
+    assert skip("b") is None
+    assert "already posted" in skip("a")  # a request never repeats a reviewed head
+    s.record(k, "b" * 40, "posted", now=T0)
+    assert "only on request" in skip("c")  # the posted review used the request up
+    # A review that did not finish is retried, at the same head up to
+    # max_attempts and at a new head without a request.
     s.record(k, "c" * 40, "failed", now=T0)
     s.record(k, "c" * 40, "failed", now=T0)
     assert s.entry(k)["attempts"] == 2
-    assert s.should_skip(k, "c" * 40, dry_run=False, max_attempts=3) is None
+    assert skip("c") is None and skip("d") is None
     s.record(k, "c" * 40, "failed", now=T0)
-    assert s.should_skip(k, "c" * 40, dry_run=False, max_attempts=3)
-    s.record(k, "d" * 40, "refused", now=T0)
+    assert "failed 3 times" in skip("c")
+    assert skip("d") is None
+    # skipped: the reviewer never ran, because the head changed no files
+    s.record(k, "e" * 40, "skipped", now=T0)
+    assert "already skipped" in skip("e")
+    assert skip("f") is None
+    s.record(k, "g" * 40, "dry_run", now=T0)
+    assert skip("g", dry_run=True) and "only on request" in skip("h", dry_run=True)
+    assert skip("g") is None and skip("h") is None  # turning dry run off reviews for real
+    s.record(k, "i" * 40, "refused", now=T0)
     assert s.entry(k)["attempts"] == 1
-    assert s.should_skip(k, "d" * 40, dry_run=False, max_attempts=3)
+    assert "already refused" in skip("i") and "only on request" in skip("j")
+
+
+def test_request_is_kept_through_failures_only(tmp_path):
+    s = State(tmp_path / "state.json")
+    k = "o/r#1"
+    s.record(k, "a" * 40, "posted", now=T0)
+    s.request_review(k, 5, "anyone")
+    s.record(k, "b" * 40, "failed", now=T0)
+    assert s.entry(k)["requested"] == {"comment_id": 5, "by": "anyone"}
+    s.record(k, "b" * 40, "refused", now=T0)
+    assert "requested" not in s.entry(k)
+
+
+def test_comment_positions(tmp_path):
+    s = State(tmp_path / "state.json")
+    assert s.comment_position("O/R") == (None, 0)
+    for repo in ("O/R", "O/Quiet", "O/Unlisted"):
+        s.set_comment_position(repo, "2026-10-31T20:00:00Z", 9)
+    assert s.comment_position("o/r") == ("2026-10-31T20:00:00Z", 9)
+    # O/Quiet was listed with no open pull request; O/Unlisted could not be listed
+    s.forget_comment_positions({"O/R"}, ["O/R", "O/Quiet"])
+    assert sorted(s.data["repos"]) == ["o/r", "o/unlisted"]
 
 
 # Only consecutive failed records at the same head are attempts.
@@ -127,3 +165,24 @@ def test_lock_is_exclusive(tmp_path):
                 pass
     with StateLock(tmp_path):
         pass
+
+
+def test_last_posted_is_kept_until_the_next_posted_review(tmp_path):
+    s = State(tmp_path / "state.json")
+    k = "o/r#1"
+    assert s.last_posted(k) is None
+    s.record(k, "a" * 40, "posted", now=T0)  # no review given: nothing to keep
+    assert s.last_posted(k) is None
+    first = {"summary": "one", "verdict": "comment", "comments": []}
+    s.record(k, "a" * 40, "posted", now=T0, review=first)
+    for status in ("failed", "dry_run", "refused", "skipped"):
+        s.record(k, "b" * 40, status, now=T0)
+        assert s.last_posted(k) == {"head_sha": "a" * 40, "review": first}, status
+    second = {"summary": "two", "verdict": "approve", "comments": []}
+    s.record(k, "c" * 40, "posted", now=T0, review=second)
+    assert s.last_posted(k) == {"head_sha": "c" * 40, "review": second}
+    s.save()
+    assert State.load(tmp_path / "state.json").last_posted(k) == {"head_sha": "c" * 40,
+                                                                 "review": second}
+    s.forget_closed(set(), ["o/r"])
+    assert s.last_posted(k) is None
