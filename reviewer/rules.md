@@ -40,8 +40,7 @@ Every comment must cite `path` (relative to `/work/repo`, exactly as it
 appears in `/work/files.txt`) and `line`, the line number in the new (head)
 version of that file. Prefer a line that the diff adds or shows as context.
 Count lines in `/work/repo/<path>`, or use the `+` side of the hunk header in
-the diff, rather than guessing. Report at most 30 comments, most important
-first.
+the diff, rather than guessing. Put the most important comments first.
 
 ## What never to include
 

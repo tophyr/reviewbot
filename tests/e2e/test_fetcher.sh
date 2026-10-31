@@ -24,7 +24,8 @@
 #     the same filesystem scan
 # Input validation: a malformed repo and a non-empty /work are refused.
 # Limits: with a 1 MiB /scratch the first PR does not fit, and the fetcher
-# exits 74 with its own message, which needs the separate /log tmpfs.
+# exits FETCHER_EXIT_TOO_LARGE with its own message, which needs the separate
+# /log tmpfs.
 #
 # Needs network access to github.com and api.github.com. Uses at most 4
 # anonymous API requests.
@@ -38,7 +39,8 @@ if [ "${REVIEWBOT_E2E_SKIP_BUILD:-0}" != 1 ]; then build_images; fi
 PRS="${REVIEWBOT_E2E_FETCH_PRS:-jqlang/jq#3692 jqlang/jq#1748}"
 # The scratch and log tmpfs mounts the orchestrator gives the fetcher
 # (fetch.build_argv); the entrypoint refuses to run without them.
-SCRATCH_MOUNT=(--tmpfs /scratch:rw,size=10240m,nr_inodes=2621440 --tmpfs /log:rw,size=16m)
+SCRATCH_MOUNT=(--tmpfs "/scratch:rw,size=${MAX_FETCH_MB}m,nr_inodes=$((MAX_FETCH_MB * FETCH_INODES_PER_MB))"
+               --tmpfs "/log:rw,size=${LOG_TMPFS_MB}m")
 # The git directory is in that tmpfs, which docker export does not include.
 # For the sentinel runs the entrypoint runs under this wrapper, which counts
 # the files left in /scratch that hold the token (read from the environment,
@@ -225,10 +227,10 @@ W7="$OUT/fetch-toolarge"
 mkdir -p "$W7"
 rc=0
 PR_JSON="$(cat "$OUT/pr-$(echo "${PRS%% *}" | tr '/#' '_-').json")" \
-  docker run --rm --cap-drop ALL -e PR_JSON --tmpfs /scratch:rw,size=1m --tmpfs /log:rw,size=16m \
+  docker run --rm --cap-drop ALL -e PR_JSON --tmpfs /scratch:rw,size=1m --tmpfs "/log:rw,size=${LOG_TMPFS_MB}m" \
   -v "$W7:/work" "$FETCHER_IMAGE" >/dev/null 2>"$OUT/fetch-toolarge.stderr" || rc=$?
-[ "$rc" -eq 74 ] && grep -q "does not fit in /scratch" "$OUT/fetch-toolarge.stderr" \
-  && pass "a repository that does not fit in /scratch exits 74 with its own message" \
+[ "$rc" -eq "$FETCHER_EXIT_TOO_LARGE" ] && grep -q "does not fit in /scratch" "$OUT/fetch-toolarge.stderr" \
+  && pass "a repository that does not fit in /scratch exits $FETCHER_EXIT_TOO_LARGE with its own message" \
   || fail "too large: exit=$rc stderr=$(tail -n 3 "$OUT/fetch-toolarge.stderr" | tr '\n' ' ')"
 W6="$OUT/fetch-nonempty"
 mkdir -p "$W6"

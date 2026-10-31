@@ -28,8 +28,8 @@
 #      CLAUDE_CODE_OAUTH_TOKEN, and no src symlink
 #   3. install.sh ran exactly three `docker build -t reviewbot-<name> <dir>`,
 #      for proxy, reviewer and fetcher, with the contexts in the checkout, all
-#      three with --label reviewbot.build=<id>, the reviewer also with
-#      --build-context schema=<checkout>/orchestrator/src/reviewbot; the id has
+#      three with --label reviewbot.build=<id>, the reviewer and fetcher also
+#      with --build-context package=<checkout>/orchestrator/src/reviewbot; the id has
 #      the form <UTC timestamp>-<8 hex digits> and is the one line, mode 644,
 #      of <venv>/reviewbot-build-id
 #   4. a second run is idempotent, keeps the existing env file, builds the
@@ -168,13 +168,14 @@ build_lines() {
   printf '%s\n' "$lines"
 }
 # expect_builds USER UID HOME ID LABEL: the log holds exactly the three builds,
-# each labelled with ID, and the reviewer's with the schema build context
+# each labelled with ID, and the reviewer's and fetcher's with the package
+# build context
 expect_builds() {
   local want got
   want=$(printf '%s\n' \
-    "build -t reviewbot-fetcher --label reviewbot.build=$4 $3/rb/fetcher" \
+    "build -t reviewbot-fetcher --label reviewbot.build=$4 --build-context package=$3/rb/orchestrator/src/reviewbot $3/rb/fetcher" \
     "build -t reviewbot-proxy --label reviewbot.build=$4 $3/rb/proxy" \
-    "build -t reviewbot-reviewer --label reviewbot.build=$4 --build-context schema=$3/rb/orchestrator/src/reviewbot $3/rb/reviewer") \
+    "build -t reviewbot-reviewer --label reviewbot.build=$4 --build-context package=$3/rb/orchestrator/src/reviewbot $3/rb/reviewer") \
     || want="(printf failed)"
   got=$(build_lines "$1" "$2") || got="(build_lines failed)"
   [ "$got" = "$want" ] || { echo "got:"; echo "$got"; echo "want:"; echo "$want"; fail "$5: docker build invocations differ"; }

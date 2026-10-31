@@ -22,7 +22,7 @@ reviewbot = "reviewbot.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-reviewbot = ["schema.json"]
+reviewbot = ["schema.json", "contract.env"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

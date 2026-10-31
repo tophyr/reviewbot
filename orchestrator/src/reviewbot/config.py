@@ -5,7 +5,30 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
+
+_CONTRACT_LINE = re.compile(r"([A-Z][A-Z0-9_]*)='([^']*)'")
+
+
+def parse_contract(text: str) -> dict[str, str]:
+    """The NAME='value' lines of contract.env. Any other line that is not a
+    comment or blank is refused, so that no value can be read differently
+    here than by the shell scripts that source the file."""
+    values: dict[str, str] = {}
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        m = _CONTRACT_LINE.fullmatch(line)
+        if m is None:
+            raise ValueError(f"contract.env line {number} is not NAME='value': {line!r}")
+        values[m.group(1)] = m.group(2)
+    return values
+
+
+# The values shared with the scripts and containers (see contract.env).
+CONTRACT = parse_contract(
+    resources.files("reviewbot").joinpath("contract.env").read_text("utf-8"))
 
 
 class ConfigError(Exception):
@@ -41,16 +64,17 @@ def _reviewer_id(env: dict[str, str], name: str) -> int | None:
     return value
 
 
-# The pattern reviewer/entrypoint.sh applies to REVIEWBOT_MODEL. A value it
-# would refuse is refused here at startup instead of in every review.
-MODEL_RE = re.compile(r"[A-Za-z0-9][]A-Za-z0-9._:@[-]{0,99}")
+# The reviewer entrypoint applies the same checks, so a value it would refuse
+# is refused here at startup instead of in every review.
+MODEL_RE = re.compile(CONTRACT["MODEL_RE"])
+MAX_TURNS_LIMIT = int(CONTRACT["MAX_TURNS_LIMIT"])
 
 
 # The reviewer's settings when REVIEWBOT_MODEL and REVIEWBOT_MAX_TURNS are
 # unset. The orchestrator passes both to every reviewer run; the reviewer
 # image has no defaults of its own.
-DEFAULT_MODEL = "opus"
-DEFAULT_MAX_TURNS = 500
+DEFAULT_MODEL = CONTRACT["DEFAULT_MODEL"]
+DEFAULT_MAX_TURNS = int(CONTRACT["DEFAULT_MAX_TURNS"])
 
 
 def _model(env: dict[str, str]) -> str:
@@ -64,7 +88,7 @@ def _model(env: dict[str, str]) -> str:
 
 # Docker names derived from the prefix (images "<p>-proxy", networks
 # "<p>_internal") must stay valid image tags and container names.
-DOCKER_PREFIX_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+DOCKER_PREFIX_RE = re.compile(CONTRACT["DOCKER_PREFIX_RE"])
 
 
 @dataclass(frozen=True)
@@ -185,9 +209,10 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         dry_run=_flag(env, "REVIEWBOT_DRY_RUN"),
         keep_work=_flag(env, "REVIEWBOT_KEEP_WORK"),
         model=_model(env),
-        # reviewer/entrypoint.sh accepts 1 to 9999; refuse anything else at
-        # startup rather than in every review.
-        max_turns=_int(env, "REVIEWBOT_MAX_TURNS", DEFAULT_MAX_TURNS, minimum=1, maximum=9999),
+        # the reviewer entrypoint accepts 1 to MAX_TURNS_LIMIT; refuse anything
+        # else at startup rather than in every review.
+        max_turns=_int(env, "REVIEWBOT_MAX_TURNS", DEFAULT_MAX_TURNS, minimum=1,
+                       maximum=MAX_TURNS_LIMIT),
         reviewer_uid=_reviewer_id(env, "REVIEWBOT_REVIEWER_UID"),
         reviewer_gid=_reviewer_id(env, "REVIEWBOT_REVIEWER_GID"),
         docker=docker_names(env),

@@ -159,7 +159,7 @@ The test verifies that:
 - install.sh ran exactly three `docker build -t reviewbot-<name> <dir>`
   commands, for `proxy`, `reviewer` and `fetcher`, with the build contexts in
   the checkout, each with `--label reviewbot.build=<id>` and the reviewer
-  also with `--build-context schema=<checkout>/orchestrator/src/reviewbot`;
+  and fetcher also with `--build-context package=<checkout>/orchestrator/src/reviewbot`;
   the id has the form `<UTC timestamp>-<8 hex digits>` and is the only line
   of `<venv>/reviewbot-build-id`, mode 0644;
 - a second run keeps the env file, builds the three images again with a

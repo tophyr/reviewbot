@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from reviewbot import dockerrun, fetch, review
+from reviewbot import config, dockerrun, fetch, review
 from reviewbot.config import DockerNames
 
 SECRET = "ghs_" + "s" * 36
@@ -76,17 +76,71 @@ def test_proxy_lifetime_exceeds_the_longest_review():
     assert proxy.MAX_LIFETIME_SECONDS > longest
 
 
+CONTRACT_FILE = os.path.join(REPO, "orchestrator", "src", "reviewbot", "contract.env")
+
+
+def run_reviewer_entrypoint(tmp_path, env):
+    """reviewer/entrypoint.sh on the host, reading the checkout's contract.env
+    in place of the image's copy. Without /work it stops at its first check of
+    /work (exit 66) once the settings have passed."""
+    with open(os.path.join(REPO, "reviewer", "entrypoint.sh"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert text.count("/opt/reviewbot/contract.env") == 1
+    script = tmp_path / "entrypoint.sh"
+    script.write_text(text.replace("/opt/reviewbot/contract.env", CONTRACT_FILE))
+    return subprocess.run(["bash", str(script)], env={"PATH": os.environ["PATH"], **env},
+                          capture_output=True, text=True, timeout=10)
+
+
 @pytest.mark.parametrize("given, missing", [
     ({}, "REVIEWBOT_MODEL"),
     ({"REVIEWBOT_MODEL": "opus"}, "REVIEWBOT_MAX_TURNS"),
     ({"REVIEWBOT_MAX_TURNS": "500"}, "REVIEWBOT_MODEL"),
 ])
-def test_reviewer_entrypoint_refuses_to_run_without_the_orchestrators_settings(given, missing):
-    script = os.path.join(REPO, "reviewer", "entrypoint.sh")
-    r = subprocess.run(["bash", script], env={"PATH": os.environ["PATH"], **given},
-                       capture_output=True, text=True, timeout=10)
+def test_reviewer_entrypoint_refuses_to_run_without_the_orchestrators_settings(tmp_path, given,
+                                                                                missing):
+    r = run_reviewer_entrypoint(tmp_path, given)
     assert r.returncode == 64
     assert r.stderr == f"reviewbot-reviewer: {missing} is not set; the orchestrator passes it\n"
+
+
+# The entrypoint accepts exactly what config.py accepts, from the same
+# contract.env. The orchestrator passes the parsed number, str(max_turns).
+@pytest.mark.parametrize("turns", [0, 1, config.MAX_TURNS_LIMIT, config.MAX_TURNS_LIMIT + 1,
+                                   10 ** 20])
+def test_reviewer_entrypoint_accepts_the_turns_the_config_accepts(tmp_path, turns):
+    try:
+        config._int({"T": str(turns)}, "T", 1, minimum=1, maximum=config.MAX_TURNS_LIMIT)
+        config_accepts = True
+    except config.ConfigError:
+        config_accepts = False
+    r = run_reviewer_entrypoint(tmp_path, {"REVIEWBOT_MODEL": "opus",
+                                           "REVIEWBOT_MAX_TURNS": str(turns)})
+    assert r.returncode == (66 if config_accepts else 64), r.stderr
+
+
+@pytest.mark.parametrize("model", ["opus", "claude-opus-4-1[1m]", "us.anthropic.x:0@y",
+                                   "-p", "a b", "a" * 101, "]x"])
+def test_reviewer_entrypoint_accepts_the_models_the_config_accepts(tmp_path, model):
+    r = run_reviewer_entrypoint(tmp_path, {"REVIEWBOT_MODEL": model,
+                                           "REVIEWBOT_MAX_TURNS": "500"})
+    expected = 66 if config.MODEL_RE.fullmatch(model) else 64
+    assert r.returncode == expected, r.stderr
+
+
+def test_contract_reads_the_same_in_bash_and_python():
+    names = sorted(config.CONTRACT)
+    r = subprocess.run(["bash", "-c", '. "$1"; shift; for n in "$@"; do printf "%s=%s\\n" '
+                        '"$n" "${!n}"; done', "-", CONTRACT_FILE, *names],
+                       capture_output=True, text=True, timeout=10, check=True)
+    assert r.stdout.splitlines() == [f"{n}={config.CONTRACT[n]}" for n in names]
+
+
+@pytest.mark.parametrize("line", ['NAME="double quoted"', "NAME=bare", "name='lower'",
+                                  "NAME='it''s'", "export NAME='x'", " NAME='indented'"])
+def test_contract_parser_refuses_lines_the_shell_could_read_differently(line):
+    with pytest.raises(ValueError, match="line 2"):
+        config.parse_contract(f"# a comment\n{line}\n")
 
 
 def test_dockerfile_env_parser_reads_continued_env_lines():

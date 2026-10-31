@@ -55,7 +55,7 @@ RUN install -d -m 0755 /opt/reviewbot
 # which validates the review against it; build-images.sh passes that directory
 # as the build context named "schema".
 COPY --chmod=0444 rules.md review.md /opt/reviewbot/
-COPY --from=schema --chmod=0444 schema.json /opt/reviewbot/
+COPY --from=package --chmod=0444 schema.json contract.env /opt/reviewbot/
 COPY --chmod=0555 entrypoint.sh /opt/reviewbot/entrypoint.sh
 RUN test "$(/usr/local/bin/claude --version)" = "${CLAUDE_VERSION} (Claude Code)"
 

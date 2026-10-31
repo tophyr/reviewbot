@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import dockerrun
+from .config import CONTRACT
 
 log = logging.getLogger(__name__)
 
@@ -26,22 +27,22 @@ FETCHER_FIELDS = ("repo", "number", "base_sha", "head_sha")
 FETCH_TIMEOUT = 600
 # Size of the fetcher's /scratch tmpfs in MiB. Rootless docker does not enforce
 # --storage-opt; a sized tmpfs is enforced.
-MAX_FETCH_MB = 10240
+MAX_FETCH_MB = int(CONTRACT["MAX_FETCH_MB"])
 # Memory on top of the scratch tmpfs. tmpfs pages count against --memory, so
 # the headroom makes a full tmpfs fail with ENOSPC rather than an OOM kill.
 FETCH_MEMORY_HEADROOM_MB = 1024
 # One inode per 4 KiB block. Directories and empty files use no tmpfs pages,
 # so the size does not bound them, but each directory takes a block on the
 # host after the copy.
-FETCH_INODES_PER_MB = 256
+FETCH_INODES_PER_MB = int(CONTRACT["FETCH_INODES_PER_MB"])
 # github.com's git endpoint is unreachable, which is not the pull request's
 # fault.
-FETCHER_EXIT_GIT_UNREACHABLE = 75
+FETCHER_EXIT_GIT_UNREACHABLE = int(CONTRACT["FETCHER_EXIT_GIT_UNREACHABLE"])
 # The repository does not fit in the /scratch size or inode limit.
-FETCHER_EXIT_TOO_LARGE = 74
+FETCHER_EXIT_TOO_LARGE = int(CONTRACT["FETCHER_EXIT_TOO_LARGE"])
 # Size of the /log tmpfs, which holds git's stderr apart from /scratch so
 # that the message survives a full /scratch.
-LOG_TMPFS_MB = 16
+LOG_TMPFS_MB = int(CONTRACT["LOG_TMPFS_MB"])
 
 
 class FetchError(dockerrun.PullRequestFailure):

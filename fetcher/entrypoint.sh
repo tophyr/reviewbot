@@ -18,8 +18,8 @@
 # needs more than either limit fails with ENOSPC inside the tmpfs, and neither
 # the host's /work nor the container's writable layer receives more than that.
 # A tmpfs is used because rootless docker does not enforce --storage-opt.
-# Running out of either limit exits 74, so that the orchestrator can report
-# that the repository does not fit.
+# Running out of either limit exits FETCHER_EXIT_TOO_LARGE, so that the
+# orchestrator can report that the repository does not fit.
 #
 # Log: /log must be a small tmpfs mount of its own. It holds git's stderr,
 # so that git's error message survives a full /scratch.
@@ -32,6 +32,10 @@
 # container.
 set -eu
 umask 022
+
+# FETCHER_EXIT_TOO_LARGE and FETCHER_EXIT_GIT_UNREACHABLE, shared with the
+# orchestrator.
+. /opt/reviewbot/contract.env
 
 WORK=/work
 SCRATCH=/scratch
@@ -49,10 +53,10 @@ die() {
 # can make git print without bound (checkout prints one error line per file
 # it cannot create, for example a name longer than 255 bytes, and exits 0),
 # and the orchestrator reads this container's stderr. A command that fails
-# for lack of space or inodes in /scratch exits 74. The log is the only
-# reliable sign, because git removes a partial pack when a fetch fails. git
-# reports it as "No space left on device" when a fetch runs out and as "Out
-# of diskspace" when a checkout does.
+# for lack of space or inodes in /scratch exits FETCHER_EXIT_TOO_LARGE. The
+# log is the only reliable sign, because git removes a partial pack when a
+# fetch fails. git reports it as "No space left on device" when a fetch runs
+# out and as "Out of diskspace" when a checkout does.
 GIT_LOG="$LOG/git-stderr.log"
 git_logged() {
   git_rc=0
@@ -62,7 +66,7 @@ git_logged() {
   fi
   if [ "$git_rc" -ne 0 ] && grep -qE "No space left on device|Out of diskspace" "$GIT_LOG"; then
     echo "reviewbot-fetcher: the repository does not fit in $SCRATCH (its size or inode limit)" >&2
-    exit 74
+    exit "$FETCHER_EXIT_TOO_LARGE"
   fi
   return "$git_rc"
 }
@@ -139,8 +143,9 @@ git_() {
 }
 
 # A failed git fetch is either this pull request's failure (exit 1, recorded
-# against it) or github.com's git endpoint being unreachable (exit 75,
-# EX_TEMPFAIL; the orchestrator records nothing and ends the pass). The
+# against it) or github.com's git endpoint being unreachable
+# (FETCHER_EXIT_GIT_UNREACHABLE; the orchestrator records nothing and ends
+# the pass). The
 # endpoint counts as unreachable only when git ls-remote fails both for the
 # base repository and for a known public repository, fetched without the
 # token, so a repository that is missing or not accessible still gives exit 1.
@@ -157,7 +162,7 @@ fetch_failed() {
     die "$fetch_msg"
   fi
   echo "reviewbot-fetcher: $fetch_msg; github.com's git endpoint is unreachable (git ls-remote of $URL and of $PROBE_URL failed)" >&2
-  exit 75
+  exit "$FETCHER_EXIT_GIT_UNREACHABLE"
 }
 
 rm -rf "$GIT_DIR_PATH" "$TREE"

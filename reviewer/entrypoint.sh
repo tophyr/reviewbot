@@ -12,8 +12,11 @@ if [ "$#" -ne 0 ]; then
   exit 64
 fi
 
-# The orchestrator passes both on every run; their defaults are in its
-# config.py, and the image sets neither.
+# DEFAULT_*, MODEL_RE and MAX_TURNS_LIMIT, shared with the orchestrator.
+. /opt/reviewbot/contract.env
+
+# The orchestrator passes both on every run; their defaults are in
+# contract.env, and the image sets neither.
 for name in REVIEWBOT_MODEL REVIEWBOT_MAX_TURNS; do
   if [ -z "${!name:-}" ]; then
     echo "reviewbot-reviewer: $name is not set; the orchestrator passes it" >&2
@@ -24,11 +27,15 @@ done
 # Both values are passed as single argv entries, so they cannot inject shell
 # syntax. These checks stop a value that starts with "-" from being parsed
 # as another option.
-if ! [[ "$REVIEWBOT_MAX_TURNS" =~ ^[1-9][0-9]{0,3}$ ]]; then
-  echo "reviewbot-reviewer: REVIEWBOT_MAX_TURNS must be an integer from 1 to 9999" >&2
+# The length check comes first so that the numeric comparison never sees a
+# number too large for the shell.
+if ! [[ "$REVIEWBOT_MAX_TURNS" =~ ^[1-9][0-9]*$ ]] \
+    || [ "${#REVIEWBOT_MAX_TURNS}" -gt "${#MAX_TURNS_LIMIT}" ] \
+    || [ "$REVIEWBOT_MAX_TURNS" -gt "$MAX_TURNS_LIMIT" ]; then
+  echo "reviewbot-reviewer: REVIEWBOT_MAX_TURNS must be an integer from 1 to $MAX_TURNS_LIMIT" >&2
   exit 64
 fi
-model_re='^[A-Za-z0-9][]A-Za-z0-9._:@[-]{0,99}$'
+model_re="^${MODEL_RE}\$"
 if ! [[ "$REVIEWBOT_MODEL" =~ $model_re ]]; then
   echo "reviewbot-reviewer: REVIEWBOT_MODEL has unexpected characters" >&2
   exit 64

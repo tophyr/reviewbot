@@ -24,7 +24,6 @@ VERDICT_TEXT = {
     "comment": "comment",
     "request_changes": "request changes",
 }
-MAX_INLINE = 30
 
 # Model output is derived from untrusted PR content. GitHub turns these
 # forms in a review into notifications or cross-reference events on other
@@ -207,8 +206,7 @@ def build_payload(structured: dict, head_sha: str, diffmap: dict[str, set[int]],
     inline: list[dict] = []
     moved: list[dict] = []
     for c in structured["comments"]:
-        placeable = (not relocate_all and len(inline) < MAX_INLINE
-                     and can_place(diffmap, files, c["path"], c["line"]))
+        placeable = not relocate_all and can_place(diffmap, files, c["path"], c["line"])
         if placeable:
             inline.append({
                 "path": c["path"],

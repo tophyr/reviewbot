@@ -23,6 +23,9 @@ set -euo pipefail
 
 E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$E2E_DIR/../.." && pwd)"
+# Values shared with the orchestrator and the images (DEFAULT_MODEL,
+# REVIEW_TIMEOUT, MAX_FETCH_MB and so on).
+. "$ROOT/orchestrator/src/reviewbot/contract.env"
 PREFIX="reviewbot-e2e"
 PROD_PREFIX="reviewbot"
 if [ "$PREFIX" = "$PROD_PREFIX" ]; then
@@ -319,17 +322,13 @@ run_reviewer() {
   shift 3
   # The orchestrator's defaults for the two settings it passes, unless the
   # environment overrides them.
-  local defaults model turns
-  defaults="$("$PY" -I -c 'from reviewbot import config; print(config.DEFAULT_MODEL, config.DEFAULT_MAX_TURNS)')" \
-    || { log "cannot read the reviewer defaults from the orchestrator's config.py"; exit 2; }
-  model="${REVIEWBOT_MODEL:-${defaults% *}}"
-  turns="${REVIEWBOT_MAX_TURNS:-${defaults#* }}"
+  local model="${REVIEWBOT_MODEL:-$DEFAULT_MODEL}" turns="${REVIEWBOT_MAX_TURNS:-$DEFAULT_MAX_TURNS}"
   local user uid gid
   user="$(reviewer_user)"
   uid="${user%%:*}"
   gid="${user#*:}"
   local rc=0
-  timeout --kill-after=30 1200 docker run --rm --network "$INTERNAL_NET" --read-only \
+  timeout --kill-after=30 "$REVIEW_TIMEOUT" docker run --rm --network "$INTERNAL_NET" --read-only \
     --tmpfs /tmp --tmpfs "/home/reviewer:uid=$uid,gid=$gid,mode=0700" \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 4g --cpus 2 \
     -v "$work:/work:ro" \

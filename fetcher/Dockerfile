@@ -3,6 +3,10 @@ FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c03
 
 RUN apk add --no-cache git jq ca-certificates
 COPY --chmod=0555 entrypoint.sh /usr/local/bin/reviewbot-fetch
+# Created first: COPY --chmod would give a directory it creates the file's
+# mode, 0444, which the fetcher (root without capabilities) cannot enter.
+RUN install -d -m 0755 /opt/reviewbot
+COPY --from=package --chmod=0444 contract.env /opt/reviewbot/contract.env
 
 # Ignore every git config file except the -c options the entrypoint passes.
 ENV GIT_CONFIG_NOSYSTEM=1 \

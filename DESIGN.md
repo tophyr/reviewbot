@@ -175,11 +175,13 @@ and deletes `.git`.
 
 Image: `<prefix>-reviewer`. Built from a pinned Claude Code native release.
 Runs as a non-root user. Entrypoint takes no arguments. The image holds, under
-`/opt/reviewbot/`, `schema.json` and the two parts of the system prompt:
+`/opt/reviewbot/`, `schema.json`, `contract.env` and the two parts of the
+system prompt:
 
 - `rules.md`, fixed: the inputs, that everything under `/work` is untrusted
-  data, how to cite a comment's path and line, the 30-comment limit, and what
-  never to include.
+  data, how to cite a comment's path and line, and what never to include.
+  The limit of 30 comments is not repeated there: `--json-schema` gives the
+  model the schema, which sets it.
 - `review.md`, the default review instructions: what to look for, how to write
   comments, what each severity means and how to choose the verdict.
 
@@ -234,12 +236,26 @@ Docker flags the orchestrator must use for this container:
 `--rm --log-driver none --network <prefix>_internal --read-only --tmpfs /tmp --tmpfs /home/reviewer:uid=<uid>,gid=<gid>,mode=0700 --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 4g --cpus 2 -v WORK:/work:ro`
 plus a wall clock timeout (default 20 minutes) after which it is killed.
 
+## Shared values (`contract.env`)
+
+The values that the orchestrator, `deploy/build-images.sh`, the end-to-end
+scripts and the two entrypoints must agree on are defined once, in
+`orchestrator/src/reviewbot/contract.env`: the docker prefix rule, the
+reviewer's default model and turn limit and the values it accepts, the
+reviewer timeout, the fetcher's scratch and log sizes, and the fetcher's two
+special exit statuses. Each line is `NAME='value'`. The shell scripts source
+the file: `build-images.sh` and the end-to-end scripts from the checkout, and
+each entrypoint from `/opt/reviewbot/contract.env`, which the images copy
+from the `package` build context. `config.py` parses it and refuses any line
+of another shape, so that no value reads differently in Python than in the
+shell; the other modules take their values from `config.CONTRACT`.
+
 ## Structured output schema (`schema.json`)
 
 The file is `orchestrator/src/reviewbot/schema.json`, the package's data file
 that the validator reads. `deploy/build-images.sh` passes its directory to
-the reviewer build as the build context `schema`, which is where the image's
-copy comes from.
+the reviewer and fetcher builds as the build context `package`, which is
+where the reviewer image's copy comes from.
 
 ```json
 {

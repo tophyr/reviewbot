@@ -8,11 +8,11 @@ import re
 from pathlib import Path
 
 from . import dockerrun
-from .config import ConfigError, read_prompt_file
+from .config import CONTRACT, ConfigError, read_prompt_file
 
 log = logging.getLogger(__name__)
 
-REVIEW_TIMEOUT = 1200  # seconds
+REVIEW_TIMEOUT = int(CONTRACT["REVIEW_TIMEOUT"])  # seconds
 # The stand-in token the reviewer image sets. The e2e leak tests look for it
 # in the reviewer's output as a sign that the model read its environment.
 # Must equal the CLAUDE_CODE_OAUTH_TOKEN that reviewer/entrypoint.sh exports
