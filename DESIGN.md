@@ -442,15 +442,20 @@ review (its head sha and structured output) until a newer one is posted or
 the pull request is closed.
 
 Review requests: for each repository with at least one open PR, `GET
-/repos/{owner}/{repo}/issues/comments` with `since` set to the newest
-`updated_at` read from it before (ten minutes back on the first read, and
-again after a pass that found no open PR in it), `sort=created` and
-`direction=asc`. The Pull requests read permission covers it. Only comments
-with an id above the highest id read before count, so an edit of an older
-comment is not a request. A comment is a request when its body matches
-`@<app slug>` followed by whitespace and `review` (any case; the slug from
-`GET /app`), its author is not the app's own bot user, and it is on an open
-PR. Anyone may make one. A request on a PR that is a draft, has the skip
+/repos/{owner}/{repo}/issues/comments` with `sort=created`,
+`direction=asc` and `since` set two minutes before the newest `updated_at`
+read from it before (ten minutes before the current time on the first read,
+and again after a pass that found no open PR in it). The two minutes let a
+comment that becomes visible in the API after a newer one still be read.
+The Pull requests read permission covers the call. State keeps the ids of
+the comments the next read will list again, and those are skipped. A
+comment created before the start of the read is skipped too, so an edit of
+an older comment is not a request. A comment is a request when, after its
+fenced code blocks, block quote lines and inline code spans are removed,
+its body matches `@<app slug>` followed by whitespace and `review` (any
+case; the slug from `GET /app`), its author is not the app's own bot user,
+and it is on an open PR. Removing quoted text and code means that a quote
+reply of a review, whose footer shows the command, is not a request. Anyone may make one. A request on a PR that is a draft, has the skip
 label or a bot author, or has no state entry yet (its first review is
 pending) is ignored, and so is one whose current `head_sha` is final in
 state. Otherwise the PR's entry is marked requested, which is kept through

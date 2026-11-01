@@ -593,11 +593,18 @@ def test_review_of_an_already_posted_head_starts_afresh(tmp_path, monkeypatch):
 STAMP = iter(range(10**6))
 
 
-def comment(cid, body, number=7, login="mallory"):
-    """An issue comment as GitHub lists it, updated after every earlier one."""
-    n = next(STAMP)
+def stamp(minutes=0):
+    """A GitHub timestamp later than every earlier stamp() (plus minutes)."""
+    n = next(STAMP) + 60 * minutes
+    return f"2099-01-01T{n // 3600:02d}:{n // 60 % 60:02d}:{n % 60:02d}Z"
+
+
+def comment(cid, body, number=7, login="mallory", created=None, updated=None):
+    """An issue comment as GitHub lists it, by default created and updated
+    after every earlier one."""
+    updated = updated or stamp()
     return {"id": cid, "body": body, "user": {"login": login, "type": "User"},
-            "updated_at": f"2099-01-01T{n // 3600:02d}:{n // 60 % 60:02d}:{n % 60:02d}Z",
+            "created_at": created or updated, "updated_at": updated,
             "issue_url": f"https://api.github.com/repos/Owner/Repo/issues/{number}"}
 
 
@@ -627,25 +634,39 @@ def test_each_pr_is_reviewed_once_and_again_only_on_request(tmp_path, monkeypatc
     assert len(h.api.posts) == 2
 
 
-@pytest.mark.parametrize("body, login, number, cid, wanted", [
-    ("@reviewbot-test review", "mallory", 7, 200, True),
-    ("@Reviewbot-Test\n  REVIEW please", "mallory", 7, 200, True),
-    ("@reviewbot-test reviewed it", "mallory", 7, 200, False),
-    ("@reviewbot-test-other review", "mallory", 7, 200, False),
-    ("mail me@reviewbot-test review", "mallory", 7, 200, False),
-    ("@reviewbot-test review", "reviewbot-test[bot]", 7, 200, False),  # its own comment
-    ("@reviewbot-test review", "mallory", 8, 200, False),  # an issue, not an open PR
-    ("@reviewbot-test review", "mallory", 7, 50, False),  # an edit of an already read comment
+FOOTER = ("<sub>Automated review by reviewbot. To have it review commits pushed after this "
+          "review, comment `@reviewbot-test review`.</sub>")
+
+
+@pytest.mark.parametrize("body, login, number, edit, wanted", [
+    ("@reviewbot-test review", "mallory", 7, False, True),
+    ("@Reviewbot-Test\n  REVIEW please", "mallory", 7, False, True),
+    ("> quoted text\n\n@reviewbot-test review", "mallory", 7, False, True),
+    ("@reviewbot-test reviewed it", "mallory", 7, False, False),
+    ("@reviewbot-test-other review", "mallory", 7, False, False),
+    ("mail me@reviewbot-test review", "mallory", 7, False, False),
+    ("@reviewbot-test review", "reviewbot-test[bot]", 7, False, False),  # its own comment
+    ("@reviewbot-test review", "mallory", 8, False, False),  # an issue, not an open PR
+    ("@reviewbot-test review", "mallory", 7, True, False),  # an edit of an older comment
+    # quoted or shown as code, not said
+    (f"> {FOOTER}\n\nThanks!", "mallory", 7, False, False),  # GitHub's quote reply
+    ("  >@reviewbot-test review", "mallory", 7, False, False),
+    ("the `@reviewbot-test review` command did nothing", "mallory", 7, False, False),
+    ("``@reviewbot-test review``", "mallory", 7, False, False),
+    ("log:\n```\n@reviewbot-test review\n```\n", "mallory", 7, False, False),
+    ("~~~~\n@reviewbot-test review\n~~~", "mallory", 7, False, False),  # unclosed fence
+    ("```\nlog\n```\n@reviewbot-test review", "mallory", 7, False, True),
 ])
-def test_which_comments_are_review_requests(tmp_path, monkeypatch, body, login, number, cid,
+def test_which_comments_are_review_requests(tmp_path, monkeypatch, body, login, number, edit,
                                             wanted):
     h = Harness(tmp_path, monkeypatch)
     pipeline.one_pass(h.ctx)
     h.api.prs = [gh_pr(head="b" * 40)]
     h.api.comments.append(comment(60, "unrelated"))
     pipeline.one_pass(h.ctx)
-    assert h.state.comment_position("Owner/Repo")[1] == 60
-    h.api.comments.append(comment(cid, body, number=number, login=login))
+    assert h.state.comment_position("Owner/Repo")[1] == {60}
+    created = "2000-01-01T00:00:00Z" if edit else None
+    h.api.comments.append(comment(200, body, number=number, login=login, created=created))
     assert bool(pipeline.one_pass(h.ctx).reviews) == wanted
 
 
@@ -675,7 +696,7 @@ def test_request_waits_for_the_hourly_cap(tmp_path, monkeypatch):
 def test_unreadable_comments_keep_the_position_and_the_first_reviews(tmp_path, monkeypatch,
                                                                      caplog):
     h = Harness(tmp_path, monkeypatch)
-    h.state.set_comment_position("Owner/Repo", "2099-01-01T00:00:00Z", 60)
+    h.state.set_comment_position("Owner/Repo", "2099-01-01T00:00:00Z", {60})
     paginate = h.api.paginate
 
     def failing(path, token, params=None, item_key=None):
@@ -686,15 +707,39 @@ def test_unreadable_comments_keep_the_position_and_the_first_reviews(tmp_path, m
     result = pipeline.one_pass(h.ctx)
     assert [o.status for _, o in result.reviews] == ["posted"]
     assert result.listing_failures and "comments" in result.listing_failures[0]
-    assert h.state.comment_position("Owner/Repo") == ("2099-01-01T00:00:00Z", 60)
+    assert h.state.comment_position("Owner/Repo") == ("2099-01-01T00:00:00Z", {60})
     assert "listing comments for Owner/Repo failed" in caplog.text
 
 
-def test_first_comment_poll_reads_ten_minutes_back(tmp_path, monkeypatch):
+def test_first_comment_poll_reads_ten_minutes_and_the_overlap_back(tmp_path, monkeypatch):
     h = Harness(tmp_path, monkeypatch)
     monkeypatch.setattr(pipeline.time, "time", lambda: 1_800_000_000.0)
     pipeline.one_pass(h.ctx)
-    assert h.api.comment_calls[0]["since"] == "2027-01-15T07:50:00Z"  # 1_800_000_000 - 600
+    assert h.api.comment_calls[0]["since"] == "2027-01-15T07:48:00Z"  # 1_800_000_000 - 720
+
+
+def test_a_comment_that_appears_late_is_still_read(tmp_path, monkeypatch):
+    h = Harness(tmp_path, monkeypatch)
+    pipeline.one_pass(h.ctx)
+    h.api.prs = [gh_pr(head="b" * 40)]
+    early, late = stamp(), stamp(minutes=1)
+    h.api.comments.append(comment(101, "unrelated", updated=late))
+    pipeline.one_pass(h.ctx)
+    assert h.api.comment_calls[-1]["since"] < early
+    # Comment 100 was created before 101 but is listed only now.
+    h.api.comments.append(comment(100, "@reviewbot-test review", updated=early))
+    assert [o.status for _, o in pipeline.one_pass(h.ctx).reviews] == ["posted"]
+    assert h.state.comment_position("Owner/Repo")[1] == {100, 101}
+
+
+def test_seen_ids_are_dropped_once_the_overlap_has_passed(tmp_path, monkeypatch):
+    h = Harness(tmp_path, monkeypatch)
+    h.api.comments.append(comment(100, "unrelated"))
+    pipeline.one_pass(h.ctx)
+    assert h.state.comment_position("Owner/Repo")[1] == {100}
+    h.api.comments.append(comment(101, "unrelated", updated=stamp(minutes=3)))
+    pipeline.one_pass(h.ctx)
+    assert h.state.comment_position("Owner/Repo")[1] == {101}
 
 
 def test_review_footer_names_the_apps_slug(tmp_path, monkeypatch):

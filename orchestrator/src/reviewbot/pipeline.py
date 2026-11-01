@@ -9,6 +9,7 @@ import secrets as pysecrets
 import shutil
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import discovery, dockerrun, fetch, post, review, validate
@@ -358,6 +359,14 @@ def skip_reason(ctx: Context, cand: discovery.Candidate) -> str | None:
 
 # How far back the first comment poll of a repository reads, in seconds.
 FIRST_POLL_WINDOW = 600
+# How long after a newer comment an older one may still become visible in the
+# API, in seconds. Every read goes back this far.
+COMMENT_OVERLAP = 120
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _parse_time(text: str) -> datetime:
+    return datetime.fromisoformat(text)
 
 
 def take_review_requests(ctx: Context, listing: discovery.Listing) -> list[str]:
@@ -365,7 +374,13 @@ def take_review_requests(ctx: Context, listing: discovery.Listing) -> list[str]:
     mark each pull request that a comment asks to review (see
     discovery.request_pattern). Returns the repositories whose comments could
     not be read; their polling position is kept, so the next pass reads the
-    comments again."""
+    comments again.
+
+    Each read lists the comments updated in the last COMMENT_OVERLAP seconds
+    before the newest updated_at seen, so a comment that appears late is
+    still read. A comment counts only if it was created in that window
+    (otherwise it is an edit of an older comment) and its id is not in the
+    position's seen set."""
     state, failures = ctx.state, []
     open_prs: dict[str, dict[int, discovery.Candidate]] = {}
     for cand in listing.candidates:
@@ -379,29 +394,34 @@ def take_review_requests(ctx: Context, listing: discovery.Listing) -> list[str]:
         log.error("cannot read the app slug, so review requests are not read: %s", exc)
         return [f"app slug: {exc}"]
     pattern, own_login = discovery.request_pattern(slug), f"{slug}[bot]"
-    first_since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - FIRST_POLL_WINDOW))
+    first_since = datetime.fromtimestamp(time.time() - FIRST_POLL_WINDOW, timezone.utc)
+    overlap = timedelta(seconds=COMMENT_OVERLAP)
     for repo, prs in open_prs.items():
-        since, after_id = state.comment_position(repo)
-        since = since or first_since
+        since, seen = state.comment_position(repo)
         try:
-            comments = discovery.list_comments(ctx.api, ctx.auth.token_for_repo(repo), repo, since)
+            since_t = _parse_time(since) if since else first_since
+            read_from = since_t - overlap
+            comments = discovery.list_comments(ctx.api, ctx.auth.token_for_repo(repo), repo,
+                                               read_from.strftime(TIME_FORMAT))
+            times = {c["id"]: (_parse_time(c["created_at"]), _parse_time(c["updated_at"]))
+                     for c in comments}
         except Exception as exc:  # one broken repo must not stop the pass
             log.error("listing comments for %s failed: %s", repo, exc)
             failures.append(f"{repo} comments: {exc}")
             continue
-        new_since, new_after = since, after_id
         for c in comments:
-            new_since = max(new_since, c["updated_at"])
-            if c["id"] <= after_id:
+            if c["id"] in seen or times[c["id"]][0] < read_from:
                 continue  # read on an earlier pass, or an edit of an older comment
-            new_after = max(new_after, c["id"])
             login = (c.get("user") or {}).get("login", "")
-            if login == own_login or not pattern.search(c.get("body") or ""):
+            if login == own_login or not pattern.search(discovery.said_text(c.get("body") or "")):
                 continue
             cand = prs.get(int(c["issue_url"].rsplit("/", 1)[1]))
             if cand:  # otherwise an issue or a closed pull request
                 _take_request(ctx, cand, c["id"], login)
-        state.set_comment_position(repo, new_since, new_after)
+        since_t = max([since_t, *(updated for _, updated in times.values())])
+        # The comments the next read lists again.
+        seen = {cid for cid, (_, updated) in times.items() if updated >= since_t - overlap}
+        state.set_comment_position(repo, since_t.strftime(TIME_FORMAT), seen)
     state.save()
     return failures
 

@@ -14,7 +14,7 @@ The file is JSON:
         }
       },
       "repos": {
-        "owner/name": {"since": "2026-10-31T20:19:35Z", "after_id": 123}
+        "owner/name": {"since": "2026-10-31T20:19:35Z", "seen": [123, ...]}
       },
       "runs": [1761284000.0, ...]
     }
@@ -30,9 +30,9 @@ entry is removed once its pull request is closed (State.forget_closed). "last_po
 review posted on the pull request: the head sha it reviewed and the
 reviewer's structured output (summary, verdict, comments). Later records of
 other outcomes keep it. "repos" holds, per repository with open pull
-requests, the newest comment updated_at seen ("since", passed to GitHub) and
-the highest comment id seen ("after_id"; only newer comments are read as
-requests). "runs" holds the start time of every
+requests, the newest comment updated_at seen ("since") and the ids of the
+comments that the next read lists again ("seen"), which it skips (see
+pipeline.take_review_requests). "runs" holds the start time of every
 reviewer run in the last hour; each one counts against
 REVIEWBOT_MAX_REVIEWS_PER_HOUR whether or not it produced a review, because
 each one uses model quota.
@@ -169,13 +169,13 @@ class State:
 
     # comment polling position
 
-    def comment_position(self, repo: str) -> tuple[str | None, int]:
-        """("since", "after_id") for repo; (None, 0) when not polled before."""
+    def comment_position(self, repo: str) -> tuple[str | None, set[int]]:
+        """("since", "seen") for repo; (None, empty) when not polled before."""
         r = self.data["repos"].get(repo.lower()) or {}
-        return r.get("since"), int(r.get("after_id", 0))
+        return r.get("since"), set(r.get("seen", []))
 
-    def set_comment_position(self, repo: str, since: str, after_id: int) -> None:
-        self.data["repos"][repo.lower()] = {"since": since, "after_id": after_id}
+    def set_comment_position(self, repo: str, since: str, seen: set[int]) -> None:
+        self.data["repos"][repo.lower()] = {"since": since, "seen": sorted(seen)}
 
     def forget_comment_positions(self, open_repos: set[str], listed_repos: list[str]) -> None:
         """Remove the position of every repository in listed_repos without an

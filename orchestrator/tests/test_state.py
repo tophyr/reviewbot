@@ -98,10 +98,11 @@ def test_request_is_kept_through_failures_only(tmp_path):
 
 def test_comment_positions(tmp_path):
     s = State(tmp_path / "state.json")
-    assert s.comment_position("O/R") == (None, 0)
+    assert s.comment_position("O/R") == (None, set())
     for repo in ("O/R", "O/Quiet", "O/Unlisted"):
-        s.set_comment_position(repo, "2026-10-31T20:00:00Z", 9)
-    assert s.comment_position("o/r") == ("2026-10-31T20:00:00Z", 9)
+        s.set_comment_position(repo, "2026-10-31T20:00:00Z", {9, 3})
+    assert s.comment_position("o/r") == ("2026-10-31T20:00:00Z", {3, 9})
+    assert s.data["repos"]["o/r"]["seen"] == [3, 9]  # a JSON list
     # O/Quiet was listed with no open pull request; O/Unlisted could not be listed
     s.forget_comment_positions({"O/R"}, ["O/R", "O/Quiet"])
     assert sorted(s.data["repos"]) == ["o/r", "o/unlisted"]
