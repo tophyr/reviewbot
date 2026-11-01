@@ -413,7 +413,7 @@ def take_review_requests(ctx: Context, listing: discovery.Listing) -> list[str]:
             if c["id"] in seen or times[c["id"]][0] < read_from:
                 continue  # read on an earlier pass, or an edit of an older comment
             login = (c.get("user") or {}).get("login", "")
-            if login == own_login or not pattern.search(discovery.said_text(c.get("body") or "")):
+            if login == own_login or not pattern.match(c.get("body") or ""):
                 continue
             cand = prs.get(int(c["issue_url"].rsplit("/", 1)[1]))
             if cand:  # otherwise an issue or a closed pull request

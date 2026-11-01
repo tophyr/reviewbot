@@ -450,12 +450,12 @@ comment that becomes visible in the API after a newer one still be read.
 The Pull requests read permission covers the call. State keeps the ids of
 the comments the next read will list again, and those are skipped. A
 comment created before the start of the read is skipped too, so an edit of
-an older comment is not a request. A comment is a request when, after its
-fenced code blocks, block quote lines and inline code spans are removed,
-its body matches `@<app slug>` followed by whitespace and `review` (any
-case; the slug from `GET /app`), its author is not the app's own bot user,
-and it is on an open PR. Removing quoted text and code means that a quote
-reply of a review, whose footer shows the command, is not a request. Anyone may make one. A request on a PR that is a draft, has the skip
+an older comment is not a request. A comment is a request when its first text,
+after any whitespace, is `@<app slug>` followed by whitespace and `review`
+(any case; the slug from `GET /app`), its author is not the app's own bot
+user, and it is on an open PR. So a quote reply of a review, whose footer
+shows the command, is not a request. Any commenter controls the body, so
+the pattern is one that cannot backtrack. Anyone may make one. A request on a PR that is a draft, has the skip
 label or a bot author, or has no state entry yet (its first review is
 pending) is ignored, and so is one whose current `head_sha` is final in
 state. Otherwise the PR's entry is marked requested, which is kept through

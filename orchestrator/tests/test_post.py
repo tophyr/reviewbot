@@ -383,4 +383,4 @@ def test_footer_names_the_review_request_command_exactly():
     assert f"comment `@{SLUG} review`.</sub>" in footer and post.ZWSP not in footer
     # The command as a reader copies it is a request.
     from reviewbot import discovery
-    assert discovery.request_pattern(SLUG).search(footer.split("`")[1])
+    assert discovery.request_pattern(SLUG).match(footer.split("`")[1])

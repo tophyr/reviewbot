@@ -264,8 +264,7 @@ after adding or changing `REVIEWBOT_PROMPT_FILE`, run
   reviewed on their own. Anyone who can comment on the pull request can ask
   for another review with a comment containing `@<app slug> review` (for
   example `@tophyr-reviewbot review`), on the conversation tab, not on a
-  line, written as plain text: text in a block quote or in code (such as a
-  quote reply of the review) does not count. The review starts on the next pass. A request made while the head
+  line. The command must be the first text in the comment, as plain text. The review starts on the next pass. A request made while the head
   commit is one reviewbot has already reviewed is ignored and not kept, so a
   request cannot cause more than one review per pushed commit. Requests on
   drafts, on pull requests with the skip label and on pull requests by bots

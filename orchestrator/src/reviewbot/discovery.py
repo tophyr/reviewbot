@@ -93,25 +93,11 @@ def skip_reason(pr: dict, skip_label: str) -> str | None:
 
 
 def request_pattern(slug: str) -> re.Pattern:
-    """A review request in a comment: "@<app slug> review", in any case.
-    Search the text from said_text, not the raw body."""
-    return re.compile(rf"(?<![\w-])@{re.escape(slug)}\s+review\b", re.IGNORECASE)
-
-
-# Text a comment quotes or shows as code rather than says: fenced code blocks
-# (to the end when unclosed), block quote lines and inline code spans. The
-# review footer shows the request command as code, so a quote reply of a
-# review or a mention of the command does not ask for a review.
-_FENCED = re.compile(r"^[ \t]*(`{3,}|~{3,}).*?(?:^[ \t]*\1[^\n]*$|\Z)", re.M | re.S)
-_QUOTED = re.compile(r"^[ \t]*>.*$", re.M)
-_CODE_SPAN = re.compile(r"(`+).+?\1", re.S)
-
-
-def said_text(body: str) -> str:
-    """body without the text it quotes or shows as code."""
-    for pattern in (_FENCED, _QUOTED, _CODE_SPAN):
-        body = pattern.sub("", body)
-    return body
+    """A review request: a comment whose first text is "@<app slug> review",
+    in any case. Use with .match. Any commenter controls the body, so the
+    pattern must not backtrack: each part is followed by a literal character
+    it cannot match."""
+    return re.compile(rf"\s*@{re.escape(slug)}\s+review\b", re.IGNORECASE)
 
 
 def list_comments(api, token: str, repo: str, since: str) -> list[dict]:

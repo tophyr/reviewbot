@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 
 import pytest
 from conftest import fixture_text
@@ -617,7 +618,7 @@ def test_each_pr_is_reviewed_once_and_again_only_on_request(tmp_path, monkeypatc
     h.api.prs = [gh_pr(head="b" * 40)]  # a push
     assert pipeline.one_pass(h.ctx).reviews == []
     # Anyone may ask; the review of the new head sees the earlier one.
-    h.api.comments.append(comment(100, "please @reviewbot-test review this"))
+    h.api.comments.append(comment(100, "@reviewbot-test review this, please"))
     assert [o.status for _, o in pipeline.one_pass(h.ctx).reviews] == ["posted"]
     assert h.review_calls[-1]["previous"]["head_sha"] == "a" * 40
     assert "Owner/Repo#7: review requested by mallory (comment 100)" in caplog.text
@@ -640,22 +641,18 @@ FOOTER = ("<sub>Automated review by reviewbot. To have it review commits pushed 
 
 @pytest.mark.parametrize("body, login, number, edit, wanted", [
     ("@reviewbot-test review", "mallory", 7, False, True),
-    ("@Reviewbot-Test\n  REVIEW please", "mallory", 7, False, True),
-    ("> quoted text\n\n@reviewbot-test review", "mallory", 7, False, True),
+    ("\n  @Reviewbot-Test\n  REVIEW please", "mallory", 7, False, True),
+    ("please @reviewbot-test review", "mallory", 7, False, False),  # not the first text
+    ("> quoted text\n\n@reviewbot-test review", "mallory", 7, False, False),
     ("@reviewbot-test reviewed it", "mallory", 7, False, False),
     ("@reviewbot-test-other review", "mallory", 7, False, False),
-    ("mail me@reviewbot-test review", "mallory", 7, False, False),
+    ("me@reviewbot-test review", "mallory", 7, False, False),
     ("@reviewbot-test review", "reviewbot-test[bot]", 7, False, False),  # its own comment
     ("@reviewbot-test review", "mallory", 8, False, False),  # an issue, not an open PR
     ("@reviewbot-test review", "mallory", 7, True, False),  # an edit of an older comment
-    # quoted or shown as code, not said
     (f"> {FOOTER}\n\nThanks!", "mallory", 7, False, False),  # GitHub's quote reply
-    ("  >@reviewbot-test review", "mallory", 7, False, False),
     ("the `@reviewbot-test review` command did nothing", "mallory", 7, False, False),
-    ("``@reviewbot-test review``", "mallory", 7, False, False),
-    ("log:\n```\n@reviewbot-test review\n```\n", "mallory", 7, False, False),
-    ("~~~~\n@reviewbot-test review\n~~~", "mallory", 7, False, False),  # unclosed fence
-    ("```\nlog\n```\n@reviewbot-test review", "mallory", 7, False, True),
+    ("`@reviewbot-test review`", "mallory", 7, False, False),
 ])
 def test_which_comments_are_review_requests(tmp_path, monkeypatch, body, login, number, edit,
                                             wanted):
@@ -757,3 +754,17 @@ def test_an_unexpected_app_slug_stops_the_review_before_the_reviewer(tmp_path, m
     assert out.status == "environment" and "unexpected slug" in out.detail
     assert h.fetch_calls == [] and h.review_calls == [] and h.api.posts == []
     assert h.state.entry("Owner/Repo#7") is None
+
+
+@pytest.mark.parametrize("body", [
+    "`" * 20000 + "x" * 40000,  # the input from the review that found the backtracking
+    " " * 65000 + "x",
+    "@reviewbot-test" + " " * 65000 + "x",
+    "@reviewbot-test" * 4000,
+])
+def test_request_matching_is_fast_on_hostile_comments(body):
+    # GitHub allows 65,536 characters in a comment.
+    pattern = discovery.request_pattern("reviewbot-test")
+    start = time.monotonic()
+    assert not pattern.match(body)
+    assert time.monotonic() - start < 0.5
