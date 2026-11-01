@@ -22,6 +22,14 @@
 #     is non-zero, and the sentinel again appears nowhere
 #   - control: a container that writes the sentinel to /tmp is detected by
 #     the same filesystem scan
+# interdiff.patch, with prev_sha set to commits of jqlang/jq#3694 (four
+# commits on base 49fbca1) and jqlang/jq#1748:
+#   - an earlier commit of the PR: interdiff.patch exists and touches only the
+#     file changed after that commit, while diff.patch touches both files
+#   - the parent of the base commit (an ancestor of head with a different
+#     merge base), a commit that is not an ancestor of head, and a commit id
+#     that does not exist: exit 0 and no interdiff.patch
+#   - a malformed prev_sha is refused
 # Input validation: a malformed repo and a non-empty /work are refused.
 # Limits: with a 1 MiB /scratch the first PR does not fit, and the fetcher
 # exits FETCHER_EXIT_TOO_LARGE with its own message, which needs the separate
@@ -212,6 +220,59 @@ timeout 300 docker run --rm --cap-drop ALL -e PR_JSON "${SCRATCH_MOUNT[@]}" -v "
 [ "$rc" -ne 0 ] && grep -q "terminal prompts disabled" "$OUT/fetch-noauth.stderr" \
   && pass "control: without a token the same fetch fails with 'terminal prompts disabled' (so the helper check above is meaningful)" \
   || fail "control: no-token fetch exit=$rc stderr=$(tr '\n' ' ' < "$OUT/fetch-noauth.stderr")"
+
+# interdiff.patch. The commits are fixed: jqlang/jq#3694 is merged, and
+# refs/pull/3694/head keeps its four commits on base 49fbca1:
+#   9a52a28 (src/main.c, tests/shtest), b02e0e1 (src/main.c),
+#   bf4e701 (src/main.c), e01ed37 (tests/shtest).
+# e440ccc is the parent of the base commit. jqlang/jq#1748's base f58787c is
+# not an ancestor of its head.
+J3694='"repo":"jqlang/jq","number":3694,"base_sha":"49fbca1242c7f46f00b849de76565764e0254a03","head_sha":"e01ed374ff3be0889bce9178260a2849bfdd4b31"'
+J1748='"repo":"jqlang/jq","number":1748,"base_sha":"f58787c41835d9b17795730cb04925fdba25c71c","head_sha":"0b5da6e8505a47fae984e7445b800b864164c6f1"'
+# fetch_prev TAG JSON_FIELDS PREV_SHA -> runs the fetcher into $OUT/prev-TAG,
+# sets rc and layout, and leaves stderr in $OUT/prev-TAG.stderr
+fetch_prev() {
+  local w="$OUT/prev-$1"
+  mkdir -p "$w"
+  rc=0
+  PR_JSON="{$2,\"prev_sha\":\"$3\"}" timeout 600 docker run --rm --cap-drop ALL \
+    --security-opt no-new-privileges -e PR_JSON "${SCRATCH_MOUNT[@]}" -v "$w:/work" \
+    "$FETCHER_IMAGE" >/dev/null 2>"$OUT/prev-$1.stderr" || rc=$?
+  layout="$(cd "$w" && ls -A | tr '\n' ' ')" || layout="(ls failed)"
+}
+# diff_paths FILE -> the "diff --git" lines of FILE, joined by spaces
+diff_paths() {
+  local lines
+  lines="$(grep -E '^diff --git ' "$1")" || lines=""
+  printf '%s' "$lines" | tr '\n' ' '
+}
+
+fetch_prev earlier "$J3694" bf4e70124b592f555ff923c843edd37e8a7bd24c
+if [ "$rc" -eq 0 ] && [ "$layout" = "diff.patch files.txt interdiff.patch repo " ]; then
+  inter="$(diff_paths "$OUT/prev-earlier/interdiff.patch")"
+  full="$(diff_paths "$OUT/prev-earlier/diff.patch")"
+  [ "$inter" = "diff --git a/tests/shtest b/tests/shtest" ] \
+    && [ "$full" = "diff --git a/src/main.c b/src/main.c diff --git a/tests/shtest b/tests/shtest" ] \
+    && pass "prev_sha an earlier commit of the PR: interdiff.patch covers $inter, diff.patch covers $full" \
+    || fail "prev_sha an earlier commit of the PR: interdiff.patch covers '$inter', diff.patch covers '$full'"
+else
+  fail "prev_sha an earlier commit of the PR: exit $rc, layout $layout: $(tail -n 3 "$OUT/prev-earlier.stderr" | tr '\n' ' ')"
+fi
+# prev_case TAG JSON_FIELDS PREV_SHA MESSAGE: exit 0, no interdiff.patch, and
+# MESSAGE in stderr
+prev_case() {
+  fetch_prev "$1" "$2" "$3"
+  [ "$rc" -eq 0 ] && [ "$layout" = "diff.patch files.txt repo " ] && grep -qF -- "$4" "$OUT/prev-$1.stderr" \
+    && pass "prev_sha $1: exit 0, no interdiff.patch ($4)" \
+    || fail "prev_sha $1: exit $rc, layout $layout: $(tail -n 3 "$OUT/prev-$1.stderr" | tr '\n' ' ')"
+}
+prev_case older-base "$J3694" e440cccc0a685d7e7879108b3abcdb3ed0c85b5d "has merge base"
+prev_case not-ancestor "$J1748" f58787c41835d9b17795730cb04925fdba25c71c "is not an ancestor of head_sha"
+prev_case missing "$J3694" 0123456789abcdef0123456789abcdef01234567 "is not in the fetched history"
+fetch_prev malformed "$J3694" abc
+[ "$rc" -ne 0 ] && [ -z "$layout" ] && grep -q "prev_sha is not a full commit id" "$OUT/prev-malformed.stderr" \
+  && pass "malformed prev_sha refused: $(cat "$OUT/prev-malformed.stderr")" \
+  || fail "malformed prev_sha: exit=$rc, /work has: $layout"
 
 # Input validation.
 W5="$OUT/fetch-badrepo"

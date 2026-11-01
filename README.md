@@ -39,14 +39,21 @@ the setting.
 The steps of one review:
 
 1. The orchestrator lists open, non-draft pull requests on the repositories the
-   app is installed on. It skips pull requests with the skip label, pull
-   requests by bots, pull requests whose head commit was already reviewed, and
-   anything over the hourly cap.
+   app is installed on, and reads new comments in the repositories that have
+   any. It reviews a pull request it has not reviewed before, and one that a
+   comment asks it to review again (see "Day to day"). It skips pull requests
+   with the skip label, pull requests by bots, and anything over the hourly
+   cap.
 2. It creates an empty scratch directory and starts the fetcher container
    with a read-only installation token for that one repository.
 3. The fetcher writes `diff.patch`, `files.txt` and `repo/` (the checkout,
    without `.git`) into the scratch directory, and the orchestrator then
-   writes `pr.json` there.
+   writes `pr.json` there. When reviewbot has posted a review of an earlier
+   head of the pull request, the orchestrator also writes that review as
+   `previous_review.json`, and the fetcher writes `interdiff.patch`, the
+   changes since that head, unless the branch was rebased or merged with its
+   base branch since then. The reviewer then reports what changed since
+   that review and does not post its findings again.
 4. The orchestrator starts the proxy container and waits until it accepts
    connections (at most 15 seconds), then starts the review container with
    the scratch directory mounted read-only at `/work`. Claude Code runs with
@@ -58,7 +65,8 @@ The steps of one review:
 6. The orchestrator checks the JSON against the schema and refuses it if it
    contains a token.
 7. The orchestrator posts the review to GitHub as the app, with the review
-   event `COMMENT`, and records the head commit in its state file.
+   event `COMMENT`, and records the head commit and the review in its state
+   file.
 
 ## Security model
 
@@ -91,9 +99,11 @@ Residual risks:
   Anthropic.
 - A hostile pull request can make the review text misleading, for example by
   hiding a real problem or inventing one. A reader has to treat the review as
-  advice.
+  advice. Because each review of a later head reads the previous one, text
+  that misled one review can also affect the next ones.
 - Every review consumes Claude Max subscription quota. The hourly cap limits
-  how fast it is used.
+  how fast it is used. Anyone who can comment can ask for a review, but at
+  most one per head commit pushed to the pull request.
 
 ## Setup
 
@@ -238,21 +248,34 @@ after adding or changing `REVIEWBOT_PROMPT_FILE`, run
 - State: `~/.local/share/reviewbot/state/state.json` records, for each
   `owner/name#number` (the repository name as GitHub reports it), the last
   reviewed head commit and its status (`posted`, `refused`, `skipped`,
-  `dry_run`, `failed`), plus the start times used for the hourly cap. The first
-  three are final for that head commit, `dry_run` is final only while dry run
-  is on (so turning it off reviews the pull request for real), and `failed` is
-  retried. A pull request's entry is removed on the first pass that lists
+  `dry_run`, `failed`), the last posted review and any pending review
+  request, plus, per repository, how far its comments have been read, and
+  the start times used for the hourly cap. The first three statuses are final
+  for that head commit, `dry_run` is final only while dry run is on (so
+  turning it off reviews the pull request for real), and `failed` is
+  retried. A pull request whose status is `skipped` (no changed files) or
+  `failed` is reviewed at its next head without a request. A pull request's entry is removed on the first pass that lists
   its repository without it, so the file holds only open pull requests.
   Scratch directories are in `~/.local/share/reviewbot/work` and are deleted
   after each review unless `REVIEWBOT_KEEP_WORK=1`.
 - Excluding a pull request: add the label `no-reviewbot` to it. Draft pull
   requests and pull requests by bots are always skipped.
-- Re-reviewing: a new push to the pull request changes the head commit and
-  triggers a new review. To review the same commit again, close the pull
-  request, wait for one pass (`REVIEWBOT_POLL_SECONDS`, 180 by default, plus
-  the pass itself) and reopen it. To review a skipped pull request, stop the
-  service (it holds a lock on the state directory), source the env file and
-  run `venv/bin/reviewbot review owner/name#123` as in setup step 4.
+- Re-reviewing: each pull request is reviewed once, and later pushes are not
+  reviewed on their own. Anyone who can comment on the pull request can ask
+  for another review with a comment starting with `@<app slug> review` (for
+  example `@tophyr-reviewbot review`), as plain text, on the conversation
+  tab, not on a line. A comment that has other text before the command,
+  such as `please @tophyr-reviewbot review`, is not a request. The review
+  starts on the next pass. A request made while the head commit is one
+  reviewbot has already reviewed is ignored and not kept, so a request
+  cannot cause more than one review per pushed commit. Requests on
+  drafts, on pull requests with the skip label and on pull requests by bots
+  are ignored too. To review the same commit again, close the pull request,
+  wait for one pass (`REVIEWBOT_POLL_SECONDS`, 180 by default, plus the pass
+  itself) and reopen it; or stop the service (it holds a lock on the state
+  directory), source the env file and run
+  `venv/bin/reviewbot review owner/name#123` as in setup step 4, which also
+  reviews a skipped pull request.
 - Hourly cap: `REVIEWBOT_MAX_REVIEWS_PER_HOUR` limits reviewer runs in any
   rolling hour. Failed and refused runs count, because they also use quota.
   A pull request that failed is retried up to 3 times for the same head

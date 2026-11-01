@@ -11,6 +11,7 @@ from reviewbot.diffmap import parse_diff
 from reviewbot.github_auth import GitHubError
 
 HEAD = "f" * 40
+SLUG = "reviewbot-test"
 
 
 def ctx():
@@ -35,7 +36,7 @@ def review(verdict="request_changes"):
 
 def test_payload_shape():
     m, f = ctx()
-    p = post.build_payload(review(), HEAD, m, f)
+    p = post.build_payload(review(), HEAD, m, f, slug=SLUG)
     assert set(p) == {"commit_id", "event", "body", "comments"}
     assert p["commit_id"] == HEAD
     assert p["event"] == "COMMENT"
@@ -47,7 +48,7 @@ def test_payload_shape():
 
 def test_unplaceable_comments_move_to_body():
     m, f = ctx()
-    body = post.build_payload(review(), HEAD, m, f)["body"]
+    body = post.build_payload(review(), HEAD, m, f, slug=SLUG)["body"]
     assert body.startswith("**reviewbot verdict: request changes**")
     assert "Summary text." in body
     assert "- `src/calc.py` line 1: **nit**: Untouched line." in body
@@ -55,18 +56,18 @@ def test_unplaceable_comments_move_to_body():
     assert "- `nowhere.py` line 3: **security**: Not in PR." in body
     assert "Inline one." not in body
     total = len(review()["comments"])
-    assert body.count("\n- `") + len(post.build_payload(review(), HEAD, m, f)["comments"]) == total
+    assert body.count("\n- `") + len(post.build_payload(review(), HEAD, m, f, slug=SLUG)["comments"]) == total
 
 
 @pytest.mark.parametrize("verdict", ["approve", "comment", "request_changes"])
 def test_event_is_always_comment(verdict):
     m, f = ctx()
-    assert post.build_payload(review(verdict), HEAD, m, f)["event"] == "COMMENT"
+    assert post.build_payload(review(verdict), HEAD, m, f, slug=SLUG)["event"] == "COMMENT"
 
 
 def test_relocate_all():
     m, f = ctx()
-    p = post.build_payload(review(), HEAD, m, f, relocate_all=True)
+    p = post.build_payload(review(), HEAD, m, f, relocate_all=True, slug=SLUG)
     assert p["comments"] == []
     assert "- `src/calc.py` line 6: **bug**: Inline one." in p["body"]
 
@@ -76,7 +77,7 @@ def test_mentions_are_defanged_and_paths_sanitised():
     r = review()
     r["summary"] = "cc @octocat and @org/team, email a@b.c"
     r["comments"][3]["path"] = "evil`\n# heading.py"
-    p = post.build_payload(r, HEAD, m, f)
+    p = post.build_payload(r, HEAD, m, f, slug=SLUG)
     assert "@octocat" not in p["body"] and "@​octocat" in p["body"]
     assert "@org/team" not in p["body"]
     assert "`evil??# heading.py`" in p["body"]
@@ -142,7 +143,7 @@ def test_references_are_neutralised_in_all_model_text(plain, expected):
     for c in r["comments"]:
         c["body"] = plain
     r["comments"][1]["path"] = "moved " + plain  # relocated, path shown in the body
-    p = post.build_payload(r, HEAD, m, f)
+    p = post.build_payload(r, HEAD, m, f, slug=SLUG)
     inline = [c["body"] for c in p["comments"]]
     assert inline == [f"**bug**: {expected}", f"**nit**: {expected}"]
     body = p["body"]
@@ -151,7 +152,7 @@ def test_references_are_neutralised_in_all_model_text(plain, expected):
     assert body.count(f"**: {expected}") == 3  # three relocated comment bodies
     assert f"`moved {expected}`" in body  # relocated path
     # the 422 retry puts every comment in the body; none may escape there either
-    again = post.build_payload(r, HEAD, m, f, relocate_all=True)["body"]
+    again = post.build_payload(r, HEAD, m, f, relocate_all=True, slug=SLUG)["body"]
     assert plain not in again and again.count(f"**: {expected}") == 5
 
 
@@ -190,7 +191,7 @@ def test_backslash_escaped_references_are_neutralised(escaped, expected):
     r = review()
     r["summary"] = escaped
     r["comments"][0]["body"] = escaped
-    p = post.build_payload(r, HEAD, m, f)
+    p = post.build_payload(r, HEAD, m, f, slug=SLUG)
     assert _github_unescape(p["comments"][0]["body"]) == f"**bug**: {expected}"
     assert f"\n{expected}\n" in _github_unescape(p["body"])
 
@@ -215,7 +216,7 @@ def test_ordinary_paths_are_unchanged(path):
     r["summary"] = f"See {path}."
     r["comments"][3]["path"] = path  # not in the PR, so relocated into the body
     r["comments"][3]["body"] = f"In {path} the handler is wrong."
-    body = post.build_payload(r, HEAD, m, f)["body"]
+    body = post.build_payload(r, HEAD, m, f, slug=SLUG)["body"]
     assert f"See {path}." in body
     assert f"- `{path}` line 3: **security**: In {path} the handler is wrong." in body
     assert Z not in body
@@ -308,7 +309,7 @@ def test_code_is_kept_in_payload():
     r["summary"] = code
     for c in r["comments"]:
         c["body"] = code
-    p = post.build_payload(r, HEAD, m, f)
+    p = post.build_payload(r, HEAD, m, f, slug=SLUG)
     assert [c["body"] for c in p["comments"]] == [f"**bug**: {expected}", f"**nit**: {expected}"]
     assert p["body"].count(expected) == 4  # summary and three relocated bodies
 
@@ -319,7 +320,7 @@ def test_fence_on_first_line_of_comment_is_prose():
     r = review()
     r["comments"][0]["body"] = "```\n@octocat\n```"
     r["comments"][1]["body"] = "```\n@octocat\n```"
-    p = post.build_payload(r, HEAD, m, f)
+    p = post.build_payload(r, HEAD, m, f, slug=SLUG)
     assert p["comments"][0]["body"] == f"**bug**: ```\n@{Z}octocat\n```"
     assert f"**nit**: ```\n@{Z}octocat\n```" in p["body"]
 
@@ -327,7 +328,7 @@ def test_fence_on_first_line_of_comment_is_prose():
 def test_print_payload_is_json():
     m, f = ctx()
     buf = io.StringIO()
-    post.print_payload("o/r", 7, post.build_payload(review(), HEAD, m, f), out=buf)
+    post.print_payload("o/r", 7, post.build_payload(review(), HEAD, m, f, slug=SLUG), out=buf)
     doc = json.loads(buf.getvalue())
     assert doc["endpoint"] == "POST /repos/o/r/pulls/7/reviews"
     assert doc["payload"]["event"] == "COMMENT"
@@ -352,11 +353,11 @@ class FakeAPI:
 
 def test_post_retries_422_with_comments_in_body():
     m, f = ctx()
-    payload = post.build_payload(review(), HEAD, m, f)
+    payload = post.build_payload(review(), HEAD, m, f, slug=SLUG)
     api = FakeAPI([422, 200])
     resp = post.post_review(api, "tok", "o/r", 7, payload,
                             rebuild_without_inline=lambda: post.build_payload(
-                                review(), HEAD, m, f, relocate_all=True))
+                                review(), HEAD, m, f, relocate_all=True, slug=SLUG))
     assert resp == {"id": 99}
     assert [c[1] for c in api.calls] == ["/repos/o/r/pulls/7/reviews"] * 2
     assert api.calls[0][2]["comments"] and api.calls[1][2]["comments"] == []
@@ -366,6 +367,20 @@ def test_post_other_errors_propagate():
     m, f = ctx()
     api = FakeAPI([403])
     with pytest.raises(GitHubError):
-        post.post_review(api, "tok", "o/r", 7, post.build_payload(review(), HEAD, m, f),
+        post.post_review(api, "tok", "o/r", 7, post.build_payload(review(), HEAD, m, f, slug=SLUG),
                          rebuild_without_inline=lambda: {})
     assert len(api.calls) == 1
+
+
+def test_footer_names_the_review_request_command_exactly():
+    m, f = parse_diff(fixture_text("small.diff")), set(fixture_text("small.files.txt").split())
+    r = review()
+    r["summary"] = "ping @someone"
+    body = post.build_payload(r, HEAD, m, f, slug=SLUG)["body"]
+    assert f"@{post.ZWSP}someone" in body  # model text is still defanged
+    footer = body.rsplit("\n\n", 1)[1]
+    assert footer.startswith("<sub>Automated review by reviewbot.")
+    assert f"comment `@{SLUG} review`.</sub>" in footer and post.ZWSP not in footer
+    # The command as a reader copies it is a request.
+    from reviewbot import discovery
+    assert discovery.request_pattern(SLUG).match(footer.split("`")[1])

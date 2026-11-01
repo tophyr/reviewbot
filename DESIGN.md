@@ -54,15 +54,16 @@ The orchestrator creates one scratch directory per review, `WORK`, and mounts
 it into the fetcher read-write and into the review container read-only at
 `/work`.
 
-The fetcher starts with an empty `/work` and never writes `pr.json`. The
-orchestrator writes `pr.json` after the fetcher has exited, so it is the last
-file to appear. It creates the file with `O_EXCL`: if the fetcher left an
-entry named `pr.json`, the write fails and the review is recorded as failed.
+The fetcher starts with an empty `/work` and never writes `pr.json` or
+`previous_review.json`. The orchestrator writes both after the fetcher has
+exited, so they are the last files to appear. It creates each with `O_EXCL`:
+if the fetcher left an entry of that name, the write fails and the review is
+recorded as failed.
 The fetcher never sees the title, body or labels, and the review container
-reads them only from this file.
+reads them only from `pr.json`.
 
-Layout after the fetcher has succeeded and the orchestrator has written
-`pr.json`:
+Layout after the fetcher has succeeded and the orchestrator has written its
+files:
 
 ```
 /work/
@@ -70,6 +71,10 @@ Layout after the fetcher has succeeded and the orchestrator has written
   diff.patch       unified diff from the merge base of base_sha and head_sha to head_sha (-M, no color)
   repo/            git checkout of the PR head commit, no submodules, no hooks
   files.txt        newline-separated list of paths changed in the PR, relative to repo/
+  previous_review.json  the last review posted on this PR, at an earlier head; schema below;
+                   written by the orchestrator (mode 0644), only when such a review exists
+  interdiff.patch  unified diff from that review's head to head_sha (-M, no color); written
+                   by the fetcher, only when the conditions under "Fetcher container contract" hold
 ```
 
 `pr.json`:
@@ -91,8 +96,27 @@ Layout after the fetcher has succeeded and the orchestrator has written
 }
 ```
 
+`previous_review.json` is the reviewer's structured output (see "Structured
+output schema") for the last review posted on the pull request, with the
+head sha that review was of:
+
+```json
+{
+  "head_sha": "...",
+  "summary": "...",
+  "verdict": "comment",
+  "comments": [{"path": "...", "line": 12, "severity": "bug", "body": "..."}]
+}
+```
+
+Its comment lines refer to that earlier head. The orchestrator leaves the
+file out when no review has been posted, and when the last posted review is
+of the current head (the `review` command run on a reviewed head), so that
+such a review starts afresh.
+
 The review container must treat every byte under `/work` as untrusted data,
-including `pr.json` and `diff.patch`.
+including `pr.json`, `diff.patch` and `previous_review.json`, which the
+reviewer wrote earlier from the same kind of content.
 
 ## Fetcher container contract
 
@@ -120,17 +144,20 @@ only by the orchestrator, to list pull requests, mint installation tokens
 and post reviews.
 
 For the same reason `PR_JSON` carries exactly `repo`, `number`, `base_sha`
-and `head_sha`. `repo` and `number` locate the pull request and its ref.
-`head_sha` pins the review to the commit the orchestrator recorded, so the
-fetcher notices a push made after the orchestrator read the pull request and
-fetches the exact commit. `base_sha` fixes the merge base for the diff.
+and `head_sha`, plus `prev_sha` when there is a previous review. `repo` and
+`number` locate the pull request and its ref. `head_sha` pins the review to
+the commit the orchestrator recorded, so the fetcher notices a push made
+after the orchestrator read the pull request and fetches the exact commit.
+`base_sha` fixes the merge base for the diff. `prev_sha` is the head sha of
+`previous_review.json`.
 Deriving the shas from a pull request URL would require the fetcher to query
 the API, which the rule forbids.
 
 Inputs via env:
 
 - `GITHUB_TOKEN`: installation token
-- `PR_JSON`: a JSON object with only the `repo`, `number`, `base_sha` and `head_sha` of `pr.json`.
+- `PR_JSON`: a JSON object with only the `repo`, `number`, `base_sha` and `head_sha` of `pr.json`,
+  and `prev_sha` when the orchestrator writes `previous_review.json`.
   The rest of `pr.json` (title, body and so on) is not passed: it can exceed
   the 128 KiB Linux allows for one environment string.
 
@@ -153,6 +180,16 @@ tmpfs holds, plus a directory block for each directory. A fetch that runs
 out of space or inodes in `/scratch` fails. The fetcher does not write
 `pr.json`; after the fetcher succeeds, the orchestrator writes the full
 `pr.json` into `/work` (refusing if a file of that name already exists).
+
+With `prev_sha`, the fetcher also writes `interdiff.patch`, the diff from
+`prev_sha` to `head_sha`, when all of these hold: `prev_sha` is in the
+history the fetches above brought (it is never fetched by itself), it is
+an ancestor of `head_sha`, and its merge base with `base_sha` is the merge
+base used for `diff.patch`. Then the diff holds only commits made on
+the pull request's branch since the previous review. When any of them fails
+(the branch was rebased, force-pushed, or merged with its base branch), the
+fetcher writes no `interdiff.patch`, says why on stderr and exits 0.
+
 Git must run with
 `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never -c protocol.https.allow=always`
 and `--no-recurse-submodules`. Remove `/work/repo/.git` after checkout so the
@@ -180,8 +217,9 @@ system prompt:
 
 - `rules.md`, fixed: the inputs, that everything under `/work` is untrusted
   data, how the summary and comments are posted together (so the summary
-  does not repeat the comments), how to cite a comment's path and line, and
-  what never to include.
+  does not repeat the comments), how to use an earlier review (no finding
+  posted again), how to cite a comment's path and line, and what never to
+  include.
   The limit of 30 comments is not repeated there: `--json-schema` gives the
   model the schema, which sets it.
 - `review.md`, the default review instructions: what to look for, how to write
@@ -391,19 +429,53 @@ as it would at startup. This catches images retagged under a running
 orchestrator, for example by running `deploy/build-images.sh` by hand.
 
 Loop: list every repository of every installation of the GitHub App, list
-open non-draft PRs, skip PRs with the label `no-reviewbot` or a bot author,
-skip PRs whose `head_sha` equals the last reviewed sha in state, respect the
-hourly cap, then for each: run fetcher, write `pr.json`, start the proxy
-(only for a pull request that changes files), run reviewer, remove the proxy,
-validate output, post, record `head_sha` in state. State is a JSON file keyed
-by `owner/name#number`.
+open non-draft PRs, read review requests (below), skip PRs with the label
+`no-reviewbot` or a bot author, skip PRs that have a state entry unless a
+review was requested or the last review did not finish (`failed`,
+`skipped`, or `dry_run` outside dry run), skip PRs whose `head_sha` is final
+in state, respect the hourly cap, then for each: run fetcher (with `prev_sha` when a review of an
+earlier head was posted), write `previous_review.json` and `pr.json`, start
+the proxy (only for a pull request that changes files), run reviewer, remove
+the proxy, validate output, post, record `head_sha` in state. State is a JSON
+file keyed by `owner/name#number`. Each entry also keeps the last posted
+review (its head sha and structured output) until a newer one is posted or
+the pull request is closed.
+
+Review requests: for each repository with at least one open PR, `GET
+/repos/{owner}/{repo}/issues/comments` with `sort=created`,
+`direction=asc` and `since` set two minutes before the newest `updated_at`
+read from it before (ten minutes before the current time on the first read,
+and again after a pass that found no open PR in it). The two minutes let a
+comment that becomes visible in the API after a newer one still be read.
+The Pull requests read permission covers the call. State keeps the ids of
+the comments the next read will list again, and those are skipped. A
+comment created before the start of the read is skipped too, so an edit of
+an older comment is not a request. A comment is a request when its first text,
+after any whitespace, is `@<app slug>` followed by whitespace and `review`
+(any case; the slug from `GET /app`), its author is not the app's own bot
+user, and it is on an open PR. So a quote reply of a review, whose footer
+shows the command, is not a request. Any commenter controls the body, so
+the pattern is one that cannot backtrack. Anyone may make one. A request on a PR that is a draft, has the skip
+label or a bot author, or has no state entry yet (its first review is
+pending) is ignored, and so is one whose current `head_sha` is final in
+state. Otherwise the PR's entry is marked requested, which is kept through
+`failed` records and cleared by any other record. A repository whose
+comments cannot be listed keeps its position and counts as a listing
+failure.
 
 Posting: `POST /repos/{owner}/{repo}/pulls/{number}/reviews` with
 `event: COMMENT` (never `APPROVE` or `REQUEST_CHANGES`; the verdict goes in
 the body text). Inline comments use `path`, `line`, `side: RIGHT`,
 `commit_id: head_sha`. A comment whose `path` is not in `files.txt` or whose
 line is not an added or context line in `diff.patch` is moved into the body
-text instead of dropped.
+text instead of dropped. The body ends with a line, in `<sub>`, saying the
+review is automated, is posted as a comment and does not approve or block the
+pull request, and giving the review request command `@<app slug> review` in
+a code span. That line is added after the body is defanged, so the command
+can be copied exactly, and the code span stops GitHub from reading it as a
+mention of a user with the slug's name. The slug must match
+`[a-z0-9][a-z0-9-]*`; otherwise the review is an environment failure before
+the fetch.
 
 Output validation before posting, in order; any failure means nothing is posted
 and the failure is logged:

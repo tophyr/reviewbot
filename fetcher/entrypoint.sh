@@ -3,13 +3,16 @@
 #
 # Inputs (env):
 #   PR_JSON       a JSON object with repo, number, base_sha and head_sha from
-#                 pr.json (see DESIGN.md); any other key is ignored
+#                 pr.json (see DESIGN.md), and optionally prev_sha, the head
+#                 commit of the last posted review; any other key is ignored
 #   GITHUB_TOKEN  optional; installation token. Unset or empty means
 #                 anonymous access, which works for public repositories.
 #
 # Output, in /work (mounted read-write by the orchestrator):
-#   diff.patch, files.txt, repo/ (head checkout without .git)
-#   pr.json is not written here; the orchestrator writes it afterwards.
+#   diff.patch, files.txt, repo/ (head checkout without .git), and
+#   interdiff.patch (prev_sha to head_sha) when prev_sha qualifies
+#   pr.json and previous_review.json are not written here; the orchestrator
+#   writes them afterwards.
 #
 # Scratch: /scratch must be a tmpfs mount, which the orchestrator gives a
 # size limit (fetch.MAX_FETCH_MB) and an inode limit (256 per MiB). The
@@ -90,12 +93,16 @@ REPO=$(field repo) || die "cannot read repo from PR_JSON"
 NUMBER=$(field number) || die "cannot read number from PR_JSON"
 BASE_SHA=$(field base_sha) || die "cannot read base_sha from PR_JSON"
 HEAD_SHA=$(field head_sha) || die "cannot read head_sha from PR_JSON"
+PREV_SHA=$(field prev_sha) || die "cannot read prev_sha from PR_JSON"
 
 printf '%s' "$REPO" | grep -Eqx '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || die "repo is not owner/name"
 case "$REPO" in *..*) die "repo contains '..'" ;; esac
 printf '%s' "$NUMBER" | grep -Eqx '[1-9][0-9]{0,9}' || die "number is not a positive integer"
 printf '%s' "$BASE_SHA" | grep -Eqx '[0-9a-f]{40}|[0-9a-f]{64}' || die "base_sha is not a full commit id"
 printf '%s' "$HEAD_SHA" | grep -Eqx '[0-9a-f]{40}|[0-9a-f]{64}' || die "head_sha is not a full commit id"
+if [ -n "$PREV_SHA" ]; then
+  printf '%s' "$PREV_SHA" | grep -Eqx '[0-9a-f]{40}|[0-9a-f]{64}' || die "prev_sha is not a full commit id"
+fi
 
 # Refuse to run on a non-empty work directory, so stale files from another
 # review can never be mixed in.
@@ -238,6 +245,35 @@ nl_count=$(tr -cd '\n' < "$GIT_DIR_PATH/files.z" | wc -c) || die "cannot count t
 tr '\0' '\n' < "$GIT_DIR_PATH/files.z" > "$SCRATCH/files.txt" || die "cannot write files.txt"
 [ "$(wc -l < "$SCRATCH/files.txt")" -eq "$nul_count" ] || die "files.txt line count mismatch"
 
+# interdiff.patch: the changes from prev_sha to head_sha. It is written only
+# when prev_sha is an ancestor of head_sha and has the same merge base with
+# base_sha, so that it holds no changes from the base branch. prev_sha is
+# not fetched: when the fetches above did not bring it, there is no interdiff.
+if [ -n "$PREV_SHA" ]; then
+  if ! git_ cat-file -e "$PREV_SHA^{commit}"; then
+    echo "reviewbot-fetcher: prev_sha $PREV_SHA is not in the fetched history; no interdiff.patch" >&2
+  else
+    ancestor_rc=0
+    git_ merge-base --is-ancestor "$PREV_SHA" "$HEAD_SHA" || ancestor_rc=$?
+    case "$ancestor_rc" in
+      0) ;;
+      1) echo "reviewbot-fetcher: prev_sha is not an ancestor of head_sha; no interdiff.patch" >&2 ;;
+      *) die "git merge-base --is-ancestor failed with status $ancestor_rc" ;;
+    esac
+    if [ "$ancestor_rc" -eq 0 ]; then
+      # Exit 1 means no merge base in the fetched history.
+      prev_base=$(git_ merge-base "$BASE_SHA" "$PREV_SHA") || prev_base=""
+      if [ "$prev_base" != "$merge_base" ]; then
+        echo "reviewbot-fetcher: prev_sha has merge base '${prev_base}', head_sha has $merge_base; no interdiff.patch" >&2
+      else
+        git_logged -c core.quotepath=false diff --no-color --no-ext-diff --no-textconv -M \
+          "$PREV_SHA" "$HEAD_SHA" > "$SCRATCH/interdiff.patch" || die "git diff of prev_sha failed"
+        echo "reviewbot-fetcher: wrote interdiff.patch from $PREV_SHA" >&2
+      fi
+    fi
+  fi
+fi
+
 # Belt and braces: nothing git-related may remain in the checkout.
 rm -rf "$GIT_DIR_PATH" "$TREE/.git"
 [ ! -e "$TREE/.git" ] || die "$TREE/.git still exists"
@@ -245,6 +281,9 @@ rm -rf "$GIT_DIR_PATH" "$TREE/.git"
 # Every check has passed: copy the result from the scratch tmpfs to /work.
 cp -R "$TREE" "$WORK/repo" || die "copying repo/ to $WORK failed"
 cp "$SCRATCH/diff.patch" "$SCRATCH/files.txt" "$WORK/" || die "copying diff.patch and files.txt to $WORK failed"
+if [ -e "$SCRATCH/interdiff.patch" ]; then
+  cp "$SCRATCH/interdiff.patch" "$WORK/" || die "copying interdiff.patch to $WORK failed"
+fi
 [ ! -e "$WORK/repo/.git" ] || die "$WORK/repo/.git still exists"
 
 # The review container runs as a different uid; under rootless docker that

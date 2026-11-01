@@ -69,7 +69,7 @@ def test_pr_json_written_by_the_fetcher_is_refused(tmp_path):
     work.mkdir()
     (work / "pr.json").write_text("{}")
     with pytest.raises(fetch.FetchError, match="already exists"):
-        fetch.write_pr_json(work, VALID)
+        fetch.write_json(work, "pr.json", VALID)
 
 
 def test_pr_json_is_not_written_through_a_symlink(tmp_path):
@@ -78,7 +78,7 @@ def test_pr_json_is_not_written_through_a_symlink(tmp_path):
     target = tmp_path / "target"
     (work / "pr.json").symlink_to(target)
     with pytest.raises(fetch.FetchError):
-        fetch.write_pr_json(work, VALID)
+        fetch.write_json(work, "pr.json", VALID)
     assert not target.exists()
 
 
@@ -86,11 +86,34 @@ def test_pr_json_that_cannot_be_written_is_an_environment_failure(tmp_path):
     # Not the pull request's fault: a missing work directory here, a full
     # disk or a permission problem in practice.
     with pytest.raises(dockerrun.EnvironmentFailure, match="cannot write pr.json"):
-        fetch.write_pr_json(tmp_path / "missing", VALID)
+        fetch.write_json(tmp_path / "missing", "pr.json", VALID)
 
 
-def test_fetcher_does_not_write_pr_json():
+def test_fetcher_does_not_write_the_orchestrators_files():
     here = os.path.dirname(__file__)
     with open(os.path.join(here, "..", "..", "fetcher", "entrypoint.sh"), encoding="utf-8") as fh:
         script = fh.read()
     assert '"$WORK/pr.json"' not in script
+    assert "$WORK/previous_review.json" not in script
+
+
+def test_previous_review_written_by_the_fetcher_is_refused(tmp_path):
+    work = tmp_path / "w"
+    work.mkdir()
+    (work / "previous_review.json").write_text("{}")
+    with pytest.raises(fetch.FetchError, match="previous_review.json already exists"):
+        fetch.write_json(work, "previous_review.json", {"head_sha": "a" * 40})
+
+
+def test_fetcher_gets_prev_sha_of_the_last_posted_review(tmp_path, monkeypatch):
+    fd = install(tmp_path, monkeypatch, review_stdout=GOOD)
+    pr = gh_pr()
+    doc = discovery.build_pr_json(pr)
+    ctx, state = context(tmp_path, pr)
+    earlier = "e" * 40
+    state.record(discovery.state_key(doc), earlier, "posted", review=structured())
+    assert pipeline.run_and_record(ctx, doc).status == "posted"
+    [fetch_env] = [env for args, env in fd.envs() if args[0] == "run" and
+                   args[args.index("--name") + 1].startswith("reviewbot-fetch-")]
+    assert json.loads(fetch_env["PR_JSON"]) == {
+        **{k: doc[k] for k in ("repo", "number", "base_sha", "head_sha")}, "prev_sha": earlier}

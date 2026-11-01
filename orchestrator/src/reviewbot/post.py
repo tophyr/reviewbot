@@ -202,7 +202,9 @@ def _comment_text(c: dict) -> str:
 
 
 def build_payload(structured: dict, head_sha: str, diffmap: dict[str, set[int]],
-                  files: set[str], *, relocate_all: bool = False) -> dict:
+                  files: set[str], *, slug: str, relocate_all: bool = False) -> dict:
+    """The review POST body. slug is the app's, named in the footer's review
+    request command (see pipeline.take_review_requests)."""
     inline: list[dict] = []
     moved: list[dict] = []
     for c in structured["comments"]:
@@ -224,15 +226,19 @@ def build_payload(structured: dict, head_sha: str, diffmap: dict[str, set[int]],
         for c in moved:
             parts.append(f"- {_inline_path(c['path'])} line {int(c['line'])}: "
                          f"{_comment_text(c)}")
-    parts += ["", "<sub>Automated review by reviewbot. It is posted as a comment "
-                  "and does not approve or block this pull request.</sub>"]
+    # Added after defang, which would put a ZWSP after the "@" and stop a
+    # copied command from matching. The code span keeps GitHub from treating
+    # it as a mention of the user named like the slug.
+    footer = ("\n\n<sub>Automated review by reviewbot. It is posted as a comment and does "
+              "not approve or block this pull request. To have it review commits pushed "
+              f"after this review, comment `@{slug} review`.</sub>")
 
     payload = {
         "commit_id": head_sha,
         "event": "COMMENT",
         # Code regions depend on the text around them, so the body is
         # defanged as the one document GitHub renders.
-        "body": defang("\n".join(parts)),
+        "body": defang("\n".join(parts)) + footer,
         "comments": inline,
     }
     return payload

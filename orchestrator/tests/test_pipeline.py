@@ -2,12 +2,13 @@
 
 import json
 import logging
+import time
 
 import pytest
 from conftest import fixture_text
 
 from reviewbot import config as config_mod
-from reviewbot import discovery, dockerrun, fetch, main, pipeline, review
+from reviewbot import discovery, dockerrun, fetch, main, pipeline, post, review
 from reviewbot.dockerrun import RunResult
 from reviewbot.github_auth import GitHubError
 from reviewbot.state import State
@@ -33,12 +34,21 @@ def gh_pr(number=7, head=HEAD, draft=False, labels=(), user_type="User", login="
 
 
 class FakeAPI:
-    def __init__(self, prs=(), list_path="/repos/Owner/Repo/pulls"):
+    """prs is what listing the open pull requests returns, and comments what
+    listing the issue comments of list_path's repository returns (filtered
+    by the since parameter, as GitHub does)."""
+
+    def __init__(self, prs=(), list_path="/repos/Owner/Repo/pulls", comments=()):
         self.prs = list(prs)
+        self.comments = list(comments)
+        self.comment_calls = []
         self.posts = []
         self.list_path = list_path
 
     def paginate(self, path, token, params=None, item_key=None):
+        if path == self.list_path.rsplit("/", 1)[0] + "/issues/comments":
+            self.comment_calls.append(dict(params))
+            return iter([c for c in self.comments if c["updated_at"] >= params["since"]])
         assert path == self.list_path
         return iter(self.prs)
 
@@ -133,17 +143,24 @@ class Harness:
         stdout = stdout if stdout is not None else json.dumps(
             {"type": "result", "is_error": False, "structured_output": structured()})
 
-        def fake_fetcher(image, work, pr_json, token, timeout, max_fetch_mb):
-            self.fetch_calls.append((work, pr_json, token))
+        self.interdiff = False  # whether the fake fetcher writes interdiff.patch
+
+        def fake_fetcher(image, work, pr_json, token, timeout, max_fetch_mb, prev_sha=None):
+            self.fetch_calls.append((work, pr_json, token, prev_sha))
             (work / "repo").mkdir()
+            if self.interdiff:
+                (work / "interdiff.patch").write_text("")
             (work / "diff.patch").write_text(fixture_text("small.diff"))
             (work / "files.txt").write_text("" if no_files else fixture_text("small.files.txt"))
             return RunResult(0, "", "", False, 0.1)
 
         def fake_reviewer(names, work, repo, number, *, uid, gid, env, timeout):
+            prev = work / "previous_review.json"
             self.review_calls.append({"work": work, "uid": uid, "gid": gid,
                                       "network": names.internal_network, "env": env,
-                                      "files": sorted(p.name for p in work.iterdir())})
+                                      "files": sorted(p.name for p in work.iterdir()),
+                                      "previous": json.loads(prev.read_text())
+                                      if prev.exists() else None})
             if review_rc:  # what review.run_reviewer raises for a failed run
                 raise dockerrun.PullRequestFailure(f"reviewer exit {review_rc}")
             return RunResult(0, stdout, "", False, 0.1)
@@ -162,8 +179,8 @@ class Harness:
         monkeypatch.setattr(dockerrun, "start_proxy", fake_start_proxy)
         monkeypatch.setattr(dockerrun, "stop_proxy", fake_stop_proxy)
 
-    def pr_json(self):
-        return discovery.build_pr_json(gh_pr())
+    def pr_json(self, head=HEAD):
+        return discovery.build_pr_json(gh_pr(head=head))
 
 
 def test_build_pr_json_matches_contract():
@@ -232,6 +249,7 @@ def test_dry_run_prints_and_does_not_post(tmp_path, monkeypatch, capsys):
     assert doc["payload"]["event"] == "COMMENT"
     assert h.state.should_skip("Owner/Repo#7", HEAD, dry_run=True, max_attempts=3)
     assert h.state.should_skip("Owner/Repo#7", HEAD, dry_run=False, max_attempts=3) is None
+    assert h.state.last_posted("Owner/Repo#7") is None  # nothing was posted
 
 
 def test_too_long_output_is_failed_and_retried(tmp_path, monkeypatch):
@@ -524,3 +542,229 @@ def test_validation_knows_both_orchestrator_tokens(tmp_path, monkeypatch, token)
     (path, posted_with, payload), = h.api.posts
     assert "withheld its review" in payload["body"] and "comments" not in payload
     assert token not in json.dumps(payload)
+
+
+def test_a_new_head_is_reviewed_with_the_last_posted_review(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    h = Harness(tmp_path, monkeypatch)
+    first, second, third = "a" * 40, "b" * 40, "c" * 40
+    assert pipeline.run_and_record(h.ctx, h.pr_json(first)).status == "posted"
+    assert h.fetch_calls[-1][3] is None
+    assert h.review_calls[-1]["previous"] is None
+    assert "no earlier review" in caplog.text
+    assert h.state.last_posted("Owner/Repo#7") == {"head_sha": first, "review": structured()}
+
+    # A failed review of the second head does not replace the posted one.
+    h.interdiff = True
+    with monkeypatch.context() as m:
+        m.setattr(post, "post_review", lambda *a, **kw: (_ for _ in ()).throw(
+            dockerrun.PullRequestFailure("post failed")))
+        assert pipeline.run_and_record(h.ctx, h.pr_json(second)).status == "failed"
+    assert h.fetch_calls[-1][3] == first
+    assert h.state.last_posted("Owner/Repo#7")["head_sha"] == first
+
+    caplog.clear()
+    assert pipeline.run_and_record(h.ctx, h.pr_json(third)).status == "posted"
+    assert h.fetch_calls[-1][3] == first
+    rc = h.review_calls[-1]
+    assert rc["files"] == ["diff.patch", "files.txt", "interdiff.patch", "pr.json",
+                           "previous_review.json", "repo"]
+    assert rc["previous"] == {"head_sha": first, **structured()}
+    assert f"interdiff from the review of {first[:12]}" in caplog.text
+    assert h.state.last_posted("Owner/Repo#7")["head_sha"] == third
+
+
+def test_no_interdiff_is_logged(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    h = Harness(tmp_path, monkeypatch)
+    h.state.record("Owner/Repo#7", "a" * 40, "posted", review=structured())
+    assert pipeline.run_and_record(h.ctx, h.pr_json()).status == "posted"
+    assert h.review_calls[-1]["previous"]["head_sha"] == "a" * 40
+    assert f"earlier review of {'a' * 12}, no interdiff" in caplog.text
+
+
+def test_review_of_an_already_posted_head_starts_afresh(tmp_path, monkeypatch):
+    h = Harness(tmp_path, monkeypatch)
+    h.state.record("Owner/Repo#7", HEAD, "posted", review=structured("earlier"))
+    assert main.cmd_review(h.ctx, "Owner/Repo#7") == 0
+    assert h.fetch_calls[-1][3] is None
+    assert h.review_calls[-1]["previous"] is None
+
+
+STAMP = iter(range(10**6))
+
+
+def stamp(minutes=0):
+    """A GitHub timestamp later than every earlier stamp() (plus minutes)."""
+    n = next(STAMP) + 60 * minutes
+    return f"2099-01-01T{n // 3600:02d}:{n // 60 % 60:02d}:{n % 60:02d}Z"
+
+
+def comment(cid, body, number=7, login="mallory", created=None, updated=None):
+    """An issue comment as GitHub lists it, by default created and updated
+    after every earlier one."""
+    updated = updated or stamp()
+    return {"id": cid, "body": body, "user": {"login": login, "type": "User"},
+            "created_at": created or updated, "updated_at": updated,
+            "issue_url": f"https://api.github.com/repos/Owner/Repo/issues/{number}"}
+
+
+def test_each_pr_is_reviewed_once_and_again_only_on_request(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    h = Harness(tmp_path, monkeypatch)
+    h.api.prs = [gh_pr(head="a" * 40)]
+    pipeline.one_pass(h.ctx)
+    assert len(h.api.posts) == 1
+    h.api.prs = [gh_pr(head="b" * 40)]  # a push
+    assert pipeline.one_pass(h.ctx).reviews == []
+    # Anyone may ask; the review of the new head sees the earlier one.
+    h.api.comments.append(comment(100, "@reviewbot-test review this, please"))
+    assert [o.status for _, o in pipeline.one_pass(h.ctx).reviews] == ["posted"]
+    assert h.review_calls[-1]["previous"]["head_sha"] == "a" * 40
+    assert "Owner/Repo#7: review requested by mallory (comment 100)" in caplog.text
+    assert "requested" not in h.state.entry("Owner/Repo#7")
+    # The same comment is not read twice.
+    assert pipeline.one_pass(h.ctx).reviews == []
+    # A request at a head that was already reviewed does nothing, and is not
+    # kept for a later push.
+    h.api.comments.append(comment(101, "@reviewbot-test review"))
+    assert pipeline.one_pass(h.ctx).reviews == []
+    assert f"review request by mallory ignored: head {'b' * 12} already posted" in caplog.text
+    h.api.prs = [gh_pr(head="c" * 40)]
+    assert pipeline.one_pass(h.ctx).reviews == []
+    assert len(h.api.posts) == 2
+
+
+FOOTER = ("<sub>Automated review by reviewbot. To have it review commits pushed after this "
+          "review, comment `@reviewbot-test review`.</sub>")
+
+
+@pytest.mark.parametrize("body, login, number, edit, wanted", [
+    ("@reviewbot-test review", "mallory", 7, False, True),
+    ("\n  @Reviewbot-Test\n  REVIEW please", "mallory", 7, False, True),
+    ("please @reviewbot-test review", "mallory", 7, False, False),  # not the first text
+    ("> quoted text\n\n@reviewbot-test review", "mallory", 7, False, False),
+    ("@reviewbot-test reviewed it", "mallory", 7, False, False),
+    ("@reviewbot-test-other review", "mallory", 7, False, False),
+    ("me@reviewbot-test review", "mallory", 7, False, False),
+    ("@reviewbot-test review", "reviewbot-test[bot]", 7, False, False),  # its own comment
+    ("@reviewbot-test review", "mallory", 8, False, False),  # an issue, not an open PR
+    ("@reviewbot-test review", "mallory", 7, True, False),  # an edit of an older comment
+    (f"> {FOOTER}\n\nThanks!", "mallory", 7, False, False),  # GitHub's quote reply
+    ("the `@reviewbot-test review` command did nothing", "mallory", 7, False, False),
+    ("`@reviewbot-test review`", "mallory", 7, False, False),
+])
+def test_which_comments_are_review_requests(tmp_path, monkeypatch, body, login, number, edit,
+                                            wanted):
+    h = Harness(tmp_path, monkeypatch)
+    pipeline.one_pass(h.ctx)
+    h.api.prs = [gh_pr(head="b" * 40)]
+    h.api.comments.append(comment(60, "unrelated"))
+    pipeline.one_pass(h.ctx)
+    assert h.state.comment_position("Owner/Repo")[1] == {60}
+    created = "2000-01-01T00:00:00Z" if edit else None
+    h.api.comments.append(comment(200, body, number=number, login=login, created=created))
+    assert bool(pipeline.one_pass(h.ctx).reviews) == wanted
+
+
+def test_request_on_a_draft_is_ignored(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    h = Harness(tmp_path, monkeypatch)
+    pipeline.one_pass(h.ctx)
+    h.api.prs = [gh_pr(head="b" * 40, draft=True)]
+    h.api.comments.append(comment(100, "@reviewbot-test review"))
+    pipeline.one_pass(h.ctx)
+    assert "review request by mallory ignored: draft" in caplog.text
+    h.api.prs = [gh_pr(head="b" * 40)]  # marked ready
+    assert pipeline.one_pass(h.ctx).reviews == []
+
+
+def test_request_waits_for_the_hourly_cap(tmp_path, monkeypatch):
+    h = Harness(tmp_path, monkeypatch, REVIEWBOT_MAX_REVIEWS_PER_HOUR="1")
+    pipeline.one_pass(h.ctx)
+    h.api.prs = [gh_pr(head="b" * 40)]
+    h.api.comments.append(comment(100, "@reviewbot-test review"))
+    assert [o.status for _, o in pipeline.one_pass(h.ctx).reviews] == ["capped"]
+    assert h.state.entry("Owner/Repo#7")["requested"]["comment_id"] == 100
+    h.state.data["runs"] = []  # the hour has passed
+    assert [o.status for _, o in pipeline.one_pass(h.ctx).reviews] == ["posted"]
+
+
+def test_unreadable_comments_keep_the_position_and_the_first_reviews(tmp_path, monkeypatch,
+                                                                     caplog):
+    h = Harness(tmp_path, monkeypatch)
+    h.state.set_comment_position("Owner/Repo", "2099-01-01T00:00:00Z", {60})
+    paginate = h.api.paginate
+
+    def failing(path, token, params=None, item_key=None):
+        if path.endswith("/comments"):
+            raise GitHubError(502, "Bad Gateway")
+        return paginate(path, token, params, item_key)
+    h.api.paginate = failing
+    result = pipeline.one_pass(h.ctx)
+    assert [o.status for _, o in result.reviews] == ["posted"]
+    assert result.listing_failures and "comments" in result.listing_failures[0]
+    assert h.state.comment_position("Owner/Repo") == ("2099-01-01T00:00:00Z", {60})
+    assert "listing comments for Owner/Repo failed" in caplog.text
+
+
+def test_first_comment_poll_reads_ten_minutes_and_the_overlap_back(tmp_path, monkeypatch):
+    h = Harness(tmp_path, monkeypatch)
+    monkeypatch.setattr(pipeline.time, "time", lambda: 1_800_000_000.0)
+    pipeline.one_pass(h.ctx)
+    assert h.api.comment_calls[0]["since"] == "2027-01-15T07:48:00Z"  # 1_800_000_000 - 720
+
+
+def test_a_comment_that_appears_late_is_still_read(tmp_path, monkeypatch):
+    h = Harness(tmp_path, monkeypatch)
+    pipeline.one_pass(h.ctx)
+    h.api.prs = [gh_pr(head="b" * 40)]
+    early, late = stamp(), stamp(minutes=1)
+    h.api.comments.append(comment(101, "unrelated", updated=late))
+    pipeline.one_pass(h.ctx)
+    assert h.api.comment_calls[-1]["since"] < early
+    # Comment 100 was created before 101 but is listed only now.
+    h.api.comments.append(comment(100, "@reviewbot-test review", updated=early))
+    assert [o.status for _, o in pipeline.one_pass(h.ctx).reviews] == ["posted"]
+    assert h.state.comment_position("Owner/Repo")[1] == {100, 101}
+
+
+def test_seen_ids_are_dropped_once_the_overlap_has_passed(tmp_path, monkeypatch):
+    h = Harness(tmp_path, monkeypatch)
+    h.api.comments.append(comment(100, "unrelated"))
+    pipeline.one_pass(h.ctx)
+    assert h.state.comment_position("Owner/Repo")[1] == {100}
+    h.api.comments.append(comment(101, "unrelated", updated=stamp(minutes=3)))
+    pipeline.one_pass(h.ctx)
+    assert h.state.comment_position("Owner/Repo")[1] == {101}
+
+
+def test_review_footer_names_the_apps_slug(tmp_path, monkeypatch):
+    h = Harness(tmp_path, monkeypatch)
+    pipeline.run_and_record(h.ctx, h.pr_json())
+    (_, _, payload), = h.api.posts
+    assert payload["body"].endswith("comment `@reviewbot-test review`.</sub>")
+
+
+@pytest.mark.parametrize("slug", [None, "", "Bad`slug", "-x", "a b"])
+def test_an_unexpected_app_slug_stops_the_review_before_the_reviewer(tmp_path, monkeypatch, slug):
+    h = Harness(tmp_path, monkeypatch)
+    monkeypatch.setattr(h.ctx.auth, "app_info", lambda: {"id": 1, "slug": slug})
+    out = pipeline.run_and_record(h.ctx, h.pr_json())
+    assert out.status == "environment" and "unexpected slug" in out.detail
+    assert h.fetch_calls == [] and h.review_calls == [] and h.api.posts == []
+    assert h.state.entry("Owner/Repo#7") is None
+
+
+@pytest.mark.parametrize("body", [
+    "`" * 20000 + "x" * 40000,  # the input from the review that found the backtracking
+    " " * 65000 + "x",
+    "@reviewbot-test" + " " * 65000 + "x",
+    "@reviewbot-test" * 4000,
+])
+def test_request_matching_is_fast_on_hostile_comments(body):
+    # GitHub allows 65,536 characters in a comment.
+    pattern = discovery.request_pattern("reviewbot-test")
+    start = time.monotonic()
+    assert not pattern.match(body)
+    assert time.monotonic() - start < 0.5

@@ -251,17 +251,21 @@ class FakeGitHub(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         self.server.requests.append(("GET", path))
-        if path in ("/app/installations", "/repos/Owner/Repo/installation"):
+        if path in ("/app", "/app/installations", "/repos/Owner/Repo/installation"):
             if not self._jwt_ok():
                 return self._refuse(path)
-            self._send_json(200, [{"id": 1, "account": {"login": "Owner"}}]
-                            if path == "/app/installations" else {"id": 1})
+            self._send_json(200, {"/app": {"id": 1, "slug": "reviewbot-test"},
+                                  "/app/installations": [{"id": 1, "account": {"login": "Owner"}}],
+                                  }.get(path, {"id": 1}))
         elif path in ("/installation/repositories", "/repos/Owner/Repo/pulls",
+                      "/repos/Owner/Repo/issues/comments",
                       f"/repos/Owner/Repo/pulls/{gh_pr()['number']}"):
             if self._bearer() != INSTALLATION_TOKEN:
                 return self._refuse(path)
             if path == "/installation/repositories":
                 self._send_json(200, {"repositories": [{"full_name": "Owner/Repo"}]})
+            elif path.endswith("/comments"):
+                self._send_json(200, [])
             else:
                 self._send_json(200, [gh_pr()] if path.endswith("/pulls") else gh_pr())
         else:
