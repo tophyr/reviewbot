@@ -262,11 +262,13 @@ after adding or changing `REVIEWBOT_PROMPT_FILE`, run
   requests and pull requests by bots are always skipped.
 - Re-reviewing: each pull request is reviewed once, and later pushes are not
   reviewed on their own. Anyone who can comment on the pull request can ask
-  for another review with a comment containing `@<app slug> review` (for
-  example `@tophyr-reviewbot review`), on the conversation tab, not on a
-  line. The command must be the first text in the comment, as plain text. The review starts on the next pass. A request made while the head
-  commit is one reviewbot has already reviewed is ignored and not kept, so a
-  request cannot cause more than one review per pushed commit. Requests on
+  for another review with a comment starting with `@<app slug> review` (for
+  example `@tophyr-reviewbot review`), as plain text, on the conversation
+  tab, not on a line. A comment that has other text before the command,
+  such as `please @tophyr-reviewbot review`, is not a request. The review
+  starts on the next pass. A request made while the head commit is one
+  reviewbot has already reviewed is ignored and not kept, so a request
+  cannot cause more than one review per pushed commit. Requests on
   drafts, on pull requests with the skip label and on pull requests by bots
   are ignored too. To review the same commit again, close the pull request,
   wait for one pass (`REVIEWBOT_POLL_SECONDS`, 180 by default, plus the pass
