@@ -137,14 +137,20 @@ def _read_regular(path: Path, limit: int) -> str:
 
 
 def write_json(work: Path, name: str, doc: dict) -> None:
-    """Write doc as WORK/name (pr.json or previous_review.json), mode 0644 so
-    that the reviewer's uid can read it (the service runs with UMask=0077).
+    """Write doc as WORK/name (pr.json or previous_review.json); see write_text."""
+    write_text(work, name, json.dumps(doc) + "\n")
+
+
+def write_text(work: Path, name: str, text: str) -> None:
+    """Write text as WORK/name, mode 0644 so that the reviewer's uid can read
+    it (the service runs with UMask=0077). The orchestrator writes pr.json,
+    previous_review.json and the numbered diffs this way.
 
     Called after the fetcher succeeds. The file must
     not exist yet: the fetcher does not write it. Raises FetchError if it
     does exist, and EnvironmentFailure if it cannot be written.
     """
-    data = (json.dumps(doc) + "\n").encode("utf-8")
+    data = text.encode("utf-8")
     try:
         # "x" opens with O_CREAT | O_EXCL, which also refuses a symlink
         # planted in its place, even one whose target does not exist.
@@ -162,21 +168,28 @@ def write_json(work: Path, name: str, doc: dict) -> None:
 class FetchedWork:
     diff_text: str
     files: set[str]
-    # The fetcher wrote interdiff.patch (only when it was given prev_sha).
-    has_interdiff: bool
+    # The text of interdiff.patch, None when the fetcher did not write it
+    # (it does so only when it was given prev_sha).
+    interdiff_text: str | None = None
+
+    @property
+    def has_interdiff(self) -> bool:
+        return self.interdiff_text is not None
 
 
 def read_fetch_output(work: Path) -> FetchedWork:
-    """Read diff.patch and files.txt from the fetcher's output. Both are
-    read with _read_regular: the fetcher handles hostile repository content,
-    and this runs in the orchestrator on the host."""
+    """Read diff.patch, files.txt and, when present, interdiff.patch from the
+    fetcher's output. They are read with _read_regular: the fetcher handles
+    hostile repository content, and this runs in the orchestrator on the host."""
     try:
         diff_text = _read_regular(work / "diff.patch", MAX_DIFF_BYTES)
         files_text = _read_regular(work / "files.txt", MAX_FILES_BYTES)
+        interdiff_text = (_read_regular(work / "interdiff.patch", MAX_DIFF_BYTES)
+                          if os.path.lexists(work / "interdiff.patch") else None)
     except OSError as exc:
         raise FetchError(f"fetcher output unreadable: {exc}") from exc
     # One raw path per line: the fetcher writes git diff --name-only -z with
     # each NUL turned into a newline, and fails on a path that contains a
     # newline. The lines are not in git's quoted form and are used as they are.
     files = {line for line in files_text.split("\n") if line}
-    return FetchedWork(diff_text, files, os.path.lexists(work / "interdiff.patch"))
+    return FetchedWork(diff_text, files, interdiff_text)

@@ -9,6 +9,7 @@ from conftest import fixture_text
 
 from reviewbot import config as config_mod
 from reviewbot import discovery, dockerrun, fetch, main, pipeline, post, review
+from reviewbot.diffmap import number_diff
 from reviewbot.dockerrun import RunResult
 from reviewbot.github_auth import GitHubError
 from reviewbot.state import State
@@ -144,14 +145,20 @@ class Harness:
             {"type": "result", "is_error": False, "structured_output": structured()})
 
         self.interdiff = False  # whether the fake fetcher writes interdiff.patch
+        self.interdiff_text = ""
+        self.diff_fixture = "small.diff"
+        self.files_fixture = "small.files.txt"
+        self.extra_files = {}  # more files the fake fetcher writes into /work
 
         def fake_fetcher(image, work, pr_json, token, timeout, max_fetch_mb, prev_sha=None):
             self.fetch_calls.append((work, pr_json, token, prev_sha))
             (work / "repo").mkdir()
             if self.interdiff:
-                (work / "interdiff.patch").write_text("")
-            (work / "diff.patch").write_text(fixture_text("small.diff"))
-            (work / "files.txt").write_text("" if no_files else fixture_text("small.files.txt"))
+                (work / "interdiff.patch").write_text(self.interdiff_text)
+            (work / "diff.patch").write_text(fixture_text(self.diff_fixture))
+            (work / "files.txt").write_text("" if no_files else fixture_text(self.files_fixture))
+            for name, text in self.extra_files.items():
+                (work / name).write_text(text)
             return RunResult(0, "", "", False, 0.1)
 
         def fake_reviewer(names, work, repo, number, *, uid, gid, env, timeout):
@@ -159,6 +166,8 @@ class Harness:
             self.review_calls.append({"work": work, "uid": uid, "gid": gid,
                                       "network": names.internal_network, "env": env,
                                       "files": sorted(p.name for p in work.iterdir()),
+                                      "numbered": {p.name: p.read_text() for p in
+                                                   work.glob("numbered_*.txt")},
                                       "previous": json.loads(prev.read_text())
                                       if prev.exists() else None})
             if review_rc:  # what review.run_reviewer raises for a failed run
@@ -231,7 +240,8 @@ def test_posts_review(tmp_path, monkeypatch):
                          "REVIEWBOT_MAX_TURNS": str(config_mod.DEFAULT_MAX_TURNS)}
     assert REAL not in json.dumps(rc["env"]) and ORCH_TOKEN not in json.dumps(rc["env"])
     assert (rc["uid"], rc["network"]) == (10001, h.cfg.docker.internal_network)
-    assert rc["files"] == ["diff.patch", "files.txt", "pr.json", "repo"]
+    assert rc["files"] == ["diff.patch", "files.txt", "numbered_diff.txt", "pr.json", "repo"]
+    assert rc["numbered"] == {"numbered_diff.txt": number_diff(fixture_text("small.diff"))}
     # one proxy, with the real token, started before the reviewer and removed after it
     assert h.proxy_events == [("start", 0, REAL), ("stop", 1, "reviewbot-proxy-test")]
     # bookkeeping
@@ -567,8 +577,8 @@ def test_a_new_head_is_reviewed_with_the_last_posted_review(tmp_path, monkeypatc
     assert pipeline.run_and_record(h.ctx, h.pr_json(third)).status == "posted"
     assert h.fetch_calls[-1][3] == first
     rc = h.review_calls[-1]
-    assert rc["files"] == ["diff.patch", "files.txt", "interdiff.patch", "pr.json",
-                           "previous_review.json", "repo"]
+    assert rc["files"] == ["diff.patch", "files.txt", "interdiff.patch", "numbered_diff.txt",
+                           "numbered_interdiff.txt", "pr.json", "previous_review.json", "repo"]
     assert rc["previous"] == {"head_sha": first, **structured()}
     assert f"interdiff from the review of {first[:12]}" in caplog.text
     assert h.state.last_posted("Owner/Repo#7")["head_sha"] == third
@@ -768,3 +778,61 @@ def test_request_matching_is_fast_on_hostile_comments(body):
     start = time.monotonic()
     assert not pattern.match(body)
     assert time.monotonic() - start < 0.5
+
+
+def test_reviewer_gets_numbered_interdiff(tmp_path, monkeypatch):
+    h = Harness(tmp_path, monkeypatch)
+    h.state.record("Owner/Repo#7", "a" * 40, "posted", review=structured())
+    h.interdiff = True
+    h.interdiff_text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -7,2 +7,2 @@\n-old\n+new\n same\n"
+    out = pipeline.run_and_record(h.ctx, h.pr_json())
+    assert out.status == "posted", out.detail
+    assert h.review_calls[-1]["numbered"]["numbered_interdiff.txt"] == (
+        "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -7,2 +7,2 @@\n"
+        "x:-:-old\nx:7:+new\nx:8: same\n")
+
+
+@pytest.mark.parametrize("name", ["numbered_diff.txt", "numbered_interdiff.txt"])
+def test_numbered_diff_left_by_the_fetcher_fails_the_review(tmp_path, monkeypatch, name):
+    h = Harness(tmp_path, monkeypatch)
+    if name == "numbered_interdiff.txt":
+        h.state.record("Owner/Repo#7", "a" * 40, "posted", review=structured())
+        h.interdiff = True
+    h.extra_files = {name: "Owner/Repo:1:+planted\n"}
+    out = pipeline.run_and_record(h.ctx, h.pr_json())
+    assert out.status == "failed"
+    assert f"{name} already exists" in out.detail
+    assert h.review_calls == [] and h.api.posts == []
+
+
+def descent3_harness(tmp_path, monkeypatch, lines):
+    stdout = json.dumps({"type": "result", "is_error": False, "structured_output": {
+        "summary": "Two findings.", "verdict": "request_changes", "comments": [
+            {"path": "ddio/file.cpp", "line": n, "severity": "bug", "body": f"Finding at {n}."}
+            for n in lines]}})
+    h = Harness(tmp_path, monkeypatch, stdout=stdout)
+    h.diff_fixture, h.files_fixture = "descent3_625.diff", "descent3_625.files.txt"
+    return h
+
+
+def test_descent3_625_reviewer_sees_file_lines_and_they_post_inline(tmp_path, monkeypatch):
+    h = descent3_harness(tmp_path, monkeypatch, [223, 227])
+    out = pipeline.run_and_record(h.ctx, h.pr_json())
+    assert out.status == "posted", out.detail
+    numbered = h.review_calls[0]["numbered"]["numbered_diff.txt"].split("\n")
+    assert numbered[48] == "ddio/file.cpp:223:+  if (envr) {"
+    (_, _, payload), = h.api.posts
+    assert [(c["path"], c["line"]) for c in payload["comments"]] == [
+        ("ddio/file.cpp", 223), ("ddio/file.cpp", 227)]
+    assert "outside the diff" not in payload["body"]
+
+
+def test_descent3_625_diff_text_positions_are_flagged_in_the_body(tmp_path, monkeypatch):
+    h = descent3_harness(tmp_path, monkeypatch, [49, 53])
+    out = pipeline.run_and_record(h.ctx, h.pr_json())
+    assert out.status == "posted", out.detail
+    (_, _, payload), = h.api.posts
+    assert payload["comments"] == []
+    assert "could not be posted inline" in payload["body"]
+    assert "line 49 of the diff text is line 223 of this file" in payload["body"]
+    assert "line 53 of the diff text is line 227 of this file" in payload["body"]

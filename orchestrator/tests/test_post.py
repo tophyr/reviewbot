@@ -7,7 +7,7 @@ import pytest
 from conftest import fixture_text
 
 from reviewbot import post
-from reviewbot.diffmap import parse_diff
+from reviewbot.diffmap import diff_positions, parse_diff
 from reviewbot.github_auth import GitHubError
 
 HEAD = "f" * 40
@@ -384,3 +384,60 @@ def test_footer_names_the_review_request_command_exactly():
     # The command as a reader copies it is a request.
     from reviewbot import discovery
     assert discovery.request_pattern(SLUG).match(footer.split("`")[1])
+
+
+# The review of DescentDevelopers/Descent3#625 at ab48e06e (see test_diffmap):
+# its two findings cited ddio/file.cpp lines 49 and 56, positions in the diff
+# text, and its summary said "Both are inline".
+D3_FILES = {"Descent3/init.cpp", "ddio/ddio.h", "ddio/file.cpp"}
+
+
+def d3_review(*lines):
+    return {"summary": "Summary text.", "verdict": "request_changes", "comments": [
+        {"path": "ddio/file.cpp", "line": n, "severity": "bug", "body": f"Finding {i}."}
+        for i, n in enumerate(lines)]}
+
+
+def d3_build(structured, **kw):
+    text = fixture_text("descent3_625.diff")
+    return post.build_payload(structured, HEAD, parse_diff(text), D3_FILES, slug=SLUG,
+                              positions=diff_positions(text), **kw)
+
+
+def test_descent3_625_file_lines_are_posted_inline():
+    p = d3_build(d3_review(223, 230))
+    assert [(c["path"], c["line"], c["side"]) for c in p["comments"]] == [
+        ("ddio/file.cpp", 223, "RIGHT"), ("ddio/file.cpp", 230, "RIGHT")]
+    assert "outside the diff" not in p["body"]
+
+
+def test_descent3_625_diff_text_positions_are_caught_and_named(caplog):
+    p = d3_build(d3_review(49, 56))
+    assert p["comments"] == []
+    body = p["body"]
+    assert "These comments cite lines that the diff does not show, so they could not " \
+           "be posted inline." in body
+    assert ("- `ddio/file.cpp` line 49 (not a line of the diff; line 49 of the diff "
+            "text is line 223 of this file): **bug**: Finding 0.") in body
+    assert ("- `ddio/file.cpp` line 56 (not a line of the diff; line 56 of the diff "
+            "text is line 230 of this file): **bug**: Finding 1.") in body
+    assert "2 of 2 comments cite a line outside the diff" in caplog.text
+
+
+def test_a_line_outside_the_diff_that_is_no_diff_position_gets_no_hint(caplog):
+    # line 10 of file.cpp is outside its hunk, and line 10 of the diff text
+    # belongs to Descent3/init.cpp, so nothing suggests a miscount
+    body = d3_build(d3_review(10))["body"]
+    assert "- `ddio/file.cpp` line 10: **bug**: Finding 0." in body
+    assert "diff text" not in body
+    assert "cite a line outside the diff" not in caplog.text
+
+
+def test_relocated_after_github_refusal_says_so_and_gives_no_hint():
+    p = d3_build(d3_review(223, 49), relocate_all=True)
+    assert p["comments"] == []
+    body = p["body"]
+    assert "GitHub refused the inline comments of this review" in body
+    assert "could not be posted inline" not in body
+    assert "- `ddio/file.cpp` line 223: **bug**: Finding 0." in body
+    assert "line 49 (not a line of the diff; line 49 of the diff text is line 223" in body

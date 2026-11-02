@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import discovery, dockerrun, fetch, post, review, validate
 from .config import Config, ConfigError
-from .diffmap import parse_diff
+from .diffmap import diff_positions, number_diff, parse_diff
 from .github_auth import GitHubError
 from .state import State
 
@@ -43,6 +43,11 @@ OUTCOME_LEVELS = {"failed": logging.ERROR, "refused": logging.ERROR,
 
 # GitHub statuses on a token request that are not caused by the pull request.
 TOKEN_ENVIRONMENT_STATUSES = (401, 403, 429)
+
+# Written by the orchestrator into the work directory: diff.patch and
+# interdiff.patch with the head line number on each line (diffmap.number_diff).
+NUMBERED_DIFF = "numbered_diff.txt"
+NUMBERED_INTERDIFF = "numbered_interdiff.txt"
 
 MAX_ATTEMPTS = 3  # failed reviews of one head commit before it is skipped
 # Free space needed before a fetch: a worst-case fetch writes 2 * MAX_FETCH_MB
@@ -211,7 +216,13 @@ def _review_in(ctx: Context, pr_json: dict, work: Path) -> Outcome:
         log.info("%s#%d changes no files at %s; not running the reviewer", repo, number,
                  head_sha[:12])
         return Outcome("skipped", "no changed files")
+    # The reviewer reads its line numbers from these files. They come from
+    # the same parse as dmap, which decides where a comment is placed.
+    fetch.write_text(work, NUMBERED_DIFF, number_diff(fetched.diff_text))
+    if fetched.interdiff_text is not None:
+        fetch.write_text(work, NUMBERED_INTERDIFF, number_diff(fetched.interdiff_text))
     dmap = parse_diff(fetched.diff_text)
+    positions = diff_positions(fetched.diff_text)
     if not prev:
         since = "no earlier review"
     elif fetched.has_interdiff:
@@ -244,7 +255,7 @@ def _review_in(ctx: Context, pr_json: dict, work: Path) -> Outcome:
 
     def build(structured, relocate_all=False):
         return post.build_payload(structured, head_sha, dmap, fetched.files, slug=slug,
-                                  relocate_all=relocate_all)
+                                  relocate_all=relocate_all, positions=positions)
 
     result = validate.validate_review(rres.stdout, secrets, build_payload=build)
     if not result.ok:

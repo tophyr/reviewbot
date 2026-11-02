@@ -54,11 +54,11 @@ The orchestrator creates one scratch directory per review, `WORK`, and mounts
 it into the fetcher read-write and into the review container read-only at
 `/work`.
 
-The fetcher starts with an empty `/work` and never writes `pr.json` or
-`previous_review.json`. The orchestrator writes both after the fetcher has
-exited, so they are the last files to appear. It creates each with `O_EXCL`:
-if the fetcher left an entry of that name, the write fails and the review is
-recorded as failed.
+The fetcher starts with an empty `/work` and never writes `pr.json`,
+`previous_review.json`, `numbered_diff.txt` or `numbered_interdiff.txt`. The
+orchestrator writes them after the fetcher has exited, so they are the last
+files to appear. It creates each with `O_EXCL`: if the fetcher left an entry
+of that name, the write fails and the review is recorded as failed.
 The fetcher never sees the title, body or labels, and the review container
 reads them only from `pr.json`.
 
@@ -69,13 +69,29 @@ files:
 /work/
   pr.json          metadata, schema below; written by the orchestrator (mode 0644), not the fetcher
   diff.patch       unified diff from the merge base of base_sha and head_sha to head_sha (-M, no color)
+  numbered_diff.txt  diff.patch with head line numbers (below); written by the orchestrator (mode 0644)
   repo/            git checkout of the PR head commit, no submodules, no hooks
   files.txt        newline-separated list of paths changed in the PR, relative to repo/
   previous_review.json  the last review posted on this PR, at an earlier head; schema below;
                    written by the orchestrator (mode 0644), only when such a review exists
   interdiff.patch  unified diff from that review's head to head_sha (-M, no color); written
                    by the fetcher, only when the conditions under "Fetcher container contract" hold
+  numbered_interdiff.txt  interdiff.patch with head line numbers; written by the orchestrator
+                   (mode 0644), only when interdiff.patch exists
 ```
+
+`numbered_diff.txt` has one line for each line of `diff.patch`. An added or
+context line of a hunk is written as `<path>:<line>:` followed by the diff
+line, where `<line>` is its line number in the head version of `<path>`; a
+removed line as `<path>:-:` followed by the diff line; every other line
+(file and hunk headers, the lines of a deleted file) unchanged.
+`numbered_interdiff.txt` is the same for `interdiff.patch`. The reviewer
+takes the `line` of each comment from these files. They exist because the
+Read and Grep tools number the lines of `diff.patch` itself, and a review
+that cited those numbers put every comment on the wrong line (each was a
+position in the diff text, not a line of the file). The orchestrator makes
+them with `diffmap.number_diff`, from the same parse of the diff that
+decides which comments are posted inline.
 
 `pr.json`:
 
@@ -468,7 +484,15 @@ Posting: `POST /repos/{owner}/{repo}/pulls/{number}/reviews` with
 the body text). Inline comments use `path`, `line`, `side: RIGHT`,
 `commit_id: head_sha`. A comment whose `path` is not in `files.txt` or whose
 line is not an added or context line in `diff.patch` is moved into the body
-text instead of dropped. The body ends with a line, in `<sub>`, saying the
+text instead of dropped, under the heading "Comments outside the diff" and a
+sentence saying that these comments cite lines the diff does not show, so
+they could not be posted inline. When such a line number is the position of
+an added or context line of the same file in the text of `diff.patch`, the
+entry also gives the file line at that position, and the orchestrator logs a
+warning; the comment is not moved to that line, because a comment can cite
+a line outside the diff on purpose. When GitHub refuses the inline comments
+(422) and the review is posted again with every comment in the body, the
+sentence says that instead. The body ends with a line, in `<sub>`, saying the
 review is automated, is posted as a comment and does not approve or block the
 pull request, and giving the review request command `@<app slug> review` in
 a code span. That line is added after the body is defanged, so the command
