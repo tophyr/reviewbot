@@ -48,11 +48,13 @@ The steps of one review:
    with a read-only installation token for that one repository.
 3. The fetcher writes `diff.patch`, `files.txt` and `repo/` (the checkout,
    without `.git`) into the scratch directory, and the orchestrator then
-   writes `pr.json` there. When reviewbot has posted a review of an earlier
-   head of the pull request, the orchestrator also writes that review as
-   `previous_review.json`, and the fetcher writes `interdiff.patch`, the
-   changes since that head, unless the branch was rebased or merged with its
-   base branch since then. The reviewer then reports what changed since
+   writes `pr.json` and `numbered_diff.txt` there. `numbered_diff.txt` is
+   `diff.patch` with the head line number written on each line, and the
+   reviewer takes the line of each comment from it. When reviewbot has
+   posted a review of an earlier head of the pull request, the orchestrator
+   also writes that review as `previous_review.json`, and the fetcher writes
+   `interdiff.patch`, the changes since that head, unless the branch was
+   rebased or merged with its base branch since then. The reviewer then reports what changed since
    that review and does not post its findings again.
 4. The orchestrator starts the proxy container and waits until it accepts
    connections (at most 15 seconds), then starts the review container with

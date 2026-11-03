@@ -14,7 +14,7 @@ import re
 import sys
 from typing import TextIO
 
-from .diffmap import can_place
+from .diffmap import can_place, diff_positions
 from .github_auth import GitHubError
 
 log = logging.getLogger(__name__)
@@ -202,14 +202,20 @@ def _comment_text(c: dict) -> str:
 
 
 def build_payload(structured: dict, head_sha: str, diffmap: dict[str, set[int]],
-                  files: set[str], *, slug: str, relocate_all: bool = False) -> dict:
+                  files: set[str], *, slug: str, relocate_all: bool = False,
+                  diff_text: str | None = None) -> dict:
     """The review POST body. slug is the app's, named in the footer's review
-    request command (see pipeline.take_review_requests)."""
+    request command (see pipeline.take_review_requests).
+
+    A comment whose line is not in the diff is listed in the body. diff_text
+    (the diff that diffmap was parsed from) lets that entry say which head
+    line the number is when it is a line position in the diff file itself,
+    the mistake of counting lines of diff.patch instead of the source file."""
     inline: list[dict] = []
-    moved: list[dict] = []
+    listed: list[tuple[dict, bool]] = []  # (comment, whether its line is in the diff)
     for c in structured["comments"]:
-        placeable = not relocate_all and can_place(diffmap, files, c["path"], c["line"])
-        if placeable:
+        in_diff = can_place(diffmap, files, c["path"], c["line"])
+        if in_diff and not relocate_all:
             inline.append({
                 "path": c["path"],
                 "line": c["line"],
@@ -217,15 +223,36 @@ def build_payload(structured: dict, head_sha: str, diffmap: dict[str, set[int]],
                 "body": defang(_comment_text(c)),
             })
         else:
-            moved.append(c)
+            listed.append((c, in_diff))
+    positions = {}
+    if diff_text is not None:
+        positions = diff_positions(diff_text, {(c["path"], c["line"])
+                                               for c, in_diff in listed if not in_diff})
+    moved = [(c, None if in_diff else positions.get((c["path"], c["line"])))
+             for c, in_diff in listed]
+
+    miscounted = sum(1 for _, d in moved if d is not None)
+    if miscounted and not relocate_all:
+        log.warning("%d of %d comments cite a line outside the diff that is a line "
+                    "position in diff.patch", miscounted, len(structured["comments"]))
 
     verdict = VERDICT_TEXT.get(structured["verdict"], structured["verdict"])
     parts = [f"**reviewbot verdict: {verdict}**", "", structured["summary"]]
     if moved:
         parts += ["", "#### Comments outside the diff", ""]
-        for c in moved:
-            parts.append(f"- {_inline_path(c['path'])} line {int(c['line'])}: "
-                         f"{_comment_text(c)}")
+        if relocate_all:
+            parts += ["GitHub refused the inline comments of this review, so every "
+                      "comment is listed here.", ""]
+        else:
+            parts += ["These comments cite lines that the diff does not show, so they "
+                      "could not be posted inline.", ""]
+        for c, diff_line in moved:
+            n = int(c["line"])
+            where = f"line {n}"
+            if diff_line is not None:
+                where += (f" (not a line of the diff; line {n} of the diff text is "
+                          f"line {diff_line} of this file)")
+            parts.append(f"- {_inline_path(c['path'])} {where}: {_comment_text(c)}")
     # Added after defang, which would put a ZWSP after the "@" and stop a
     # copied command from matching. The code span keeps GitHub from treating
     # it as a mention of the user named like the slug.

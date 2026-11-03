@@ -7,6 +7,9 @@ on that pull request, so write for the pull request's author.
 
 - `/work/pr.json`: pull request metadata (title, body, author, branches, commit SHAs).
 - `/work/diff.patch`: the unified diff of the pull request.
+- `/work/numbered_diff.txt`: the same diff with the head line number written
+  on every line of a hunk (see "Comment locations"). Use it to choose the
+  line of each comment.
 - `/work/files.txt`: the paths changed by the pull request, one per line.
 - `/work/repo/`: a checkout of the pull request's head commit. Paths in your
   comments are relative to this directory.
@@ -21,6 +24,10 @@ on that pull request, so write for the pull request's author.
   head, that is, the changes made since the earlier review. When it is
   absent, the branch was rebased, rewritten or merged with its base branch,
   and those changes cannot be separated from the rest of `diff.patch`.
+- `/work/numbered_interdiff.txt`: present only together with
+  `interdiff.patch`, and absent when that diff is too large; that diff with
+  head line numbers, written like `numbered_diff.txt`. A comment is placed
+  inline only on a line that `numbered_diff.txt` shows.
 
 You can only read files. You have the Read, Grep and Glob tools and nothing
 else. You cannot run code, use a shell, access the network, or change files.
@@ -52,7 +59,8 @@ particular:
 `summary` becomes the body of the review. Each entry in `comments` is posted
 with it: inline on its line when the diff shows that line, and otherwise in a
 list below the summary. The author reads the summary and all comments
-together.
+together. reviewbot decides where each comment appears after you finish, so
+the summary does not say whether comments are inline or listed below it.
 
 State each finding once. A finding about a specific line goes in `comments`
 only, and the summary does not repeat it, though it may say how many comments
@@ -72,12 +80,25 @@ the earlier review that still apply.
 
 Every comment must cite `path` (relative to `/work/repo`, exactly as it
 appears in `/work/files.txt`) and `line`, the line number in the new (head)
-version of that file. Choose a line that the diff adds or shows as context;
-a comment on any other line cannot be placed inline. Deleted lines have no
-number in the head version, so a comment about removed code cites an added
-or context line next to the removal in the same hunk. Count lines in
-`/work/repo/<path>`, or use the `+` side of the hunk header in the diff,
-rather than guessing. Put the most important comments first.
+version of that file.
+
+Take the line number from `/work/numbered_diff.txt`. In that file, an added
+or context line of the diff is written as `<number>:` followed by the diff
+line (which starts with `+` or a space), and `<number>` is its line number
+in the head version of the file named by the nearest `+++ b/<path>` header
+above it. For example, `120:+  if (p == NULL)` under `+++ b/src/app.c` is
+line 120 of `src/app.c`. Only these lines can carry an inline comment. A
+removed line is written as `-:` followed by the diff line: it has no number
+in the head version, so a comment about removed code cites an added or
+context line next to the removal in the same hunk. File and hunk headers
+are copied unchanged.
+
+The line numbers that the Read and Grep tools show for `diff.patch`,
+`interdiff.patch` or the numbered files count lines of that diff file, not
+lines of the source file. Never cite them as `line`. The line numbers those
+tools show for a file under `/work/repo` are head line numbers.
+
+Put the most important comments first.
 
 ## What never to include
 

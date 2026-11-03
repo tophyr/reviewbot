@@ -18,6 +18,7 @@ from fakedocker import install
 from test_pipeline import REAL, FakeAPI, FakeAuth, gh_pr, make_config, structured
 
 from reviewbot import discovery, dockerrun, fetch, pipeline
+from reviewbot.diffmap import number_diff
 from reviewbot.state import State
 
 GOOD = json.dumps({"type": "result", "is_error": False, "structured_output": structured()})
@@ -87,6 +88,33 @@ def test_pr_json_that_cannot_be_written_is_an_environment_failure(tmp_path):
     # disk or a permission problem in practice.
     with pytest.raises(dockerrun.EnvironmentFailure, match="cannot write pr.json"):
         fetch.write_json(tmp_path / "missing", "pr.json", VALID)
+
+
+def one_char_line_diff(lines: int) -> str:
+    """A new file of `lines` one-character lines: each 2-byte "+" line gains
+    its line number in the numbered diff."""
+    return ("diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n"
+            f"+++ b/f\n@@ -0,0 +1,{lines} @@\n" + "+\n" * lines)
+
+
+def test_numbered_diff_over_the_cap_is_too_large_and_removed(tmp_path):
+    diff = one_char_line_diff(20000)
+    numbered = "".join(number_diff(diff))
+    assert len(numbered) > 3 * len(diff)
+    with pytest.raises(fetch.TooLarge, match="numbered_diff.txt would be over"):
+        fetch.write_text(tmp_path, "numbered_diff.txt", number_diff(diff), 2 * len(diff))
+    assert not os.path.lexists(tmp_path / "numbered_diff.txt")
+    # exactly at the cap is written whole
+    fetch.write_text(tmp_path, "numbered_diff.txt", number_diff(diff), len(numbered))
+    assert (tmp_path / "numbered_diff.txt").read_text("utf-8") == numbered
+
+
+def test_capped_write_stops_reading_at_the_cap(tmp_path):
+    def chunks():
+        yield from ["x" * 10] * 3
+        raise AssertionError("read past the cap")
+    with pytest.raises(fetch.TooLarge):
+        fetch.write_text(tmp_path, "out.txt", chunks(), 25)
 
 
 def test_fetcher_does_not_write_the_orchestrators_files():

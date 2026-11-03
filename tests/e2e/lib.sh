@@ -276,7 +276,8 @@ except Exception as e:
 # make_work FIXTURE_DIR WORK_DIR
 # Builds a /work directory as the fetcher would: a git repository is made
 # from FIXTURE_DIR/base and FIXTURE_DIR/head, then repo/ (head, without .git),
-# diff.patch, files.txt and pr.json (with the real commit ids filled in).
+# diff.patch, files.txt, numbered_diff.txt and pr.json (with the real commit
+# ids filled in).
 make_work() {
   local fx="$1" work="$2" g
   g="$(mktemp -d)"
@@ -295,6 +296,15 @@ make_work() {
   git -C "$g" -c core.quotepath=false diff --no-color --no-ext-diff -M "$base_sha" "$head_sha" >"$work/diff.patch"
   # the same form the fetcher writes: raw paths, one per line
   git -C "$g" diff --no-ext-diff -M --name-only -z "$base_sha" "$head_sha" | tr '\0' '\n' >"$work/files.txt"
+  # numbered_diff.txt, which the orchestrator writes after the fetch, made by
+  # the orchestrator's own function and read the way the orchestrator reads
+  # diff.patch (bytes decoded as UTF-8, no newline translation)
+  "$PY" -I -c '
+import sys
+from reviewbot.diffmap import number_diff
+text = open(sys.argv[1], "rb").read().decode("utf-8", errors="replace")
+open(sys.argv[2], "wb").write("".join(number_diff(text)).encode("utf-8"))
+' "$work/diff.patch" "$work/numbered_diff.txt"
   mkdir -p "$work/repo"
   cp -a "$fx/head/." "$work/repo/"
   BASE_SHA="$base_sha" HEAD_SHA="$head_sha" python3 -I -c '
