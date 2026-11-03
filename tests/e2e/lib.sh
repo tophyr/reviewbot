@@ -303,7 +303,7 @@ make_work() {
 import sys
 from reviewbot.diffmap import number_diff
 text = open(sys.argv[1], "rb").read().decode("utf-8", errors="replace")
-open(sys.argv[2], "wb").write(number_diff(text).encode("utf-8"))
+open(sys.argv[2], "wb").write("".join(number_diff(text)).encode("utf-8"))
 ' "$work/diff.patch" "$work/numbered_diff.txt"
   mkdir -p "$work/repo"
   cp -a "$fx/head/." "$work/repo/"

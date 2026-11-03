@@ -77,14 +77,16 @@ files:
   interdiff.patch  unified diff from that review's head to head_sha (-M, no color); written
                    by the fetcher, only when the conditions under "Fetcher container contract" hold
   numbered_interdiff.txt  interdiff.patch with head line numbers; written by the orchestrator
-                   (mode 0644), only when interdiff.patch exists
+                   (mode 0644), only when interdiff.patch exists and both are under the
+                   size caps below
 ```
 
 `numbered_diff.txt` has one line for each line of `diff.patch`. An added or
-context line of a hunk is written as `<path>:<line>:` followed by the diff
-line, where `<line>` is its line number in the head version of `<path>`; a
-removed line as `<path>:-:` followed by the diff line; every other line
-(file and hunk headers, the lines of a deleted file) unchanged.
+context line of a hunk is written as `<line>:` followed by the diff line,
+where `<line>` is its line number in the head version of the file named by
+the `+++ ` header above it; a removed line as `-:` followed by the diff
+line; every other line (file and hunk headers, the lines of a deleted file)
+unchanged.
 `numbered_interdiff.txt` is the same for `interdiff.patch`. The reviewer
 takes the `line` of each comment from these files. They exist because the
 Read and Grep tools number the lines of `diff.patch` itself, and a review
@@ -92,6 +94,19 @@ that cited those numbers put every comment on the wrong line (each was a
 position in the diff text, not a line of the file). The orchestrator makes
 them with `diffmap.number_diff`, from the same parse of the diff that
 decides which comments are posted inline.
+
+The orchestrator reads `diff.patch` and `interdiff.patch` only up to
+`fetch.MAX_DIFF_BYTES` (50 MiB), and writes each numbered file only up to
+`pipeline.MAX_NUMBERED_BYTES` (200 MiB). The numbered files need their own
+cap because every hunk line gains its line number: a 50 MiB diff of
+one-character lines becomes 264 MiB. The
+orchestrator writes them line by line, and when a file reaches its cap it
+removes what it wrote. A `diff.patch` or `numbered_diff.txt` over its cap
+fails the review, which is recorded as an attempt. The interdiff is
+optional input, so an `interdiff.patch` over its cap stays in `/work`
+without `numbered_interdiff.txt`, and so does one whose numbered form is
+over the cap. An interdiff can be larger than `diff.patch`, for example
+when an earlier head added a large file that a later commit removed.
 
 `pr.json`:
 

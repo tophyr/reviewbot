@@ -151,39 +151,35 @@ def parse_diff(text: str) -> dict[str, set[int]]:
     return result
 
 
-def _shown_path(path: str) -> str:
-    # The fetcher refuses a path with a newline, but git's quoting can spell
-    # one; keep the numbered diff one line per line of the diff even so.
-    return path.replace("\n", "?").replace("\r", "?")
+def number_diff(text: str) -> Iterator[str]:
+    """Yield the lines of the diff, each ending in "\n", with the head line
+    number written on each line of a hunk.
 
-
-def number_diff(text: str) -> str:
-    """The diff with the head line number written on each line of a hunk.
-
-    An added or context line of a file becomes "<path>:<line>:<diff line>",
-    where <line> is its line number in the head version of <path>. A removed
-    line becomes "<path>:-:<diff line>": it has no number in the head
-    version. Every other line (file and hunk headers, the lines of a deleted
-    file) is copied unchanged. The output has as many lines as the input.
+    An added or context line becomes "<line>:<diff line>", where <line> is
+    its line number in the head version of the file named by the "+++ "
+    header above it. A removed line becomes "-:<diff line>": it has no
+    number in the head version. Every other line (file and hunk headers, the
+    lines of a deleted file) is copied unchanged. The output has as many
+    lines as the input.
     """
-    out: list[str] = []
     for dl in iter_diff(text):
         if dl.path is not None and dl.new_line is not None:
-            out.append(f"{_shown_path(dl.path)}:{dl.new_line}:{dl.text}")
+            yield f"{dl.new_line}:{dl.text}\n"
         elif dl.path is not None and dl.kind == "remove":
-            out.append(f"{_shown_path(dl.path)}:-:{dl.text}")
+            yield f"-:{dl.text}\n"
         else:
-            out.append(dl.text)
-    return "".join(line + "\n" for line in out)
+            yield dl.text + "\n"
 
 
-def diff_positions(text: str) -> dict[str, dict[int, int]]:
-    """{path: {n: head line}} for every added or context line, where n is
-    that line's 1-based position in the diff file itself."""
-    result: dict[str, dict[int, int]] = {}
+def diff_positions(text: str, wanted: set[tuple[str, int]]) -> dict[tuple[str, int], int]:
+    """{(path, n): head line} for each (path, n) in wanted where line n of the
+    diff file itself (1-based) is an added or context line of path."""
+    result: dict[tuple[str, int], int] = {}
+    if not wanted:
+        return result
     for n, dl in enumerate(iter_diff(text), start=1):
-        if dl.path is not None and dl.new_line is not None:
-            result.setdefault(dl.path, {})[n] = dl.new_line
+        if dl.path is not None and dl.new_line is not None and (dl.path, n) in wanted:
+            result[(dl.path, n)] = dl.new_line
     return result
 
 

@@ -241,7 +241,7 @@ def test_posts_review(tmp_path, monkeypatch):
     assert REAL not in json.dumps(rc["env"]) and ORCH_TOKEN not in json.dumps(rc["env"])
     assert (rc["uid"], rc["network"]) == (10001, h.cfg.docker.internal_network)
     assert rc["files"] == ["diff.patch", "files.txt", "numbered_diff.txt", "pr.json", "repo"]
-    assert rc["numbered"] == {"numbered_diff.txt": number_diff(fixture_text("small.diff"))}
+    assert rc["numbered"] == {"numbered_diff.txt": "".join(number_diff(fixture_text("small.diff")))}
     # one proxy, with the real token, started before the reviewer and removed after it
     assert h.proxy_events == [("start", 0, REAL), ("stop", 1, "reviewbot-proxy-test")]
     # bookkeeping
@@ -789,7 +789,54 @@ def test_reviewer_gets_numbered_interdiff(tmp_path, monkeypatch):
     assert out.status == "posted", out.detail
     assert h.review_calls[-1]["numbered"]["numbered_interdiff.txt"] == (
         "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -7,2 +7,2 @@\n"
-        "x:-:-old\nx:7:+new\nx:8: same\n")
+        "-:-old\n7:+new\n8: same\n")
+
+
+def test_numbered_diff_over_the_cap_fails_the_review_and_counts_an_attempt(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "MAX_NUMBERED_BYTES", 500)
+    h = Harness(tmp_path, monkeypatch)
+    out = pipeline.run_and_record(h.ctx, h.pr_json())
+    assert out.status == "failed"
+    assert "numbered_diff.txt would be over 500 bytes" in out.detail
+    assert h.review_calls == [] and h.api.posts == []
+    assert h.state.entry("Owner/Repo#7")["attempts"] == 1
+
+
+LONG_INTERDIFF = ("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,0 +1,400 @@\n"
+                  + "+\n" * 400)
+
+
+def test_interdiff_over_the_diff_cap_is_kept_without_numbers(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(fetch, "MAX_DIFF_BYTES", 2 * len(fixture_text("small.diff")))
+    h = Harness(tmp_path, monkeypatch)
+    h.state.record("Owner/Repo#7", "a" * 40, "posted", review=structured())
+    h.interdiff = True
+    h.interdiff_text = "x" * (fetch.MAX_DIFF_BYTES + 1)
+    out = pipeline.run_and_record(h.ctx, h.pr_json())
+    assert out.status == "posted", out.detail
+    rc = h.review_calls[-1]
+    assert "interdiff.patch" in rc["files"]
+    assert set(rc["numbered"]) == {"numbered_diff.txt"}
+    assert "not reading interdiff.patch" in caplog.text
+    assert f"interdiff from the review of {'a' * 12}" in caplog.text
+
+
+def test_numbered_interdiff_over_the_cap_is_left_out(tmp_path, monkeypatch, caplog):
+    numbered_diff = "".join(number_diff(fixture_text("small.diff")))
+    monkeypatch.setattr(pipeline, "MAX_NUMBERED_BYTES", len(numbered_diff.encode()))
+    assert len("".join(number_diff(LONG_INTERDIFF))) > pipeline.MAX_NUMBERED_BYTES
+    h = Harness(tmp_path, monkeypatch)
+    h.state.record("Owner/Repo#7", "a" * 40, "posted", review=structured())
+    h.interdiff = True
+    h.interdiff_text = LONG_INTERDIFF
+    out = pipeline.run_and_record(h.ctx, h.pr_json())
+    assert out.status == "posted", out.detail
+    rc = h.review_calls[-1]
+    assert "interdiff.patch" in rc["files"]
+    assert rc["numbered"] == {"numbered_diff.txt": numbered_diff}
+    assert "not writing numbered_interdiff.txt" in caplog.text
 
 
 @pytest.mark.parametrize("name", ["numbered_diff.txt", "numbered_interdiff.txt"])
@@ -820,7 +867,7 @@ def test_descent3_625_reviewer_sees_file_lines_and_they_post_inline(tmp_path, mo
     out = pipeline.run_and_record(h.ctx, h.pr_json())
     assert out.status == "posted", out.detail
     numbered = h.review_calls[0]["numbered"]["numbered_diff.txt"].split("\n")
-    assert numbered[48] == "ddio/file.cpp:223:+  if (envr) {"
+    assert numbered[48] == "223:+  if (envr) {"
     (_, _, payload), = h.api.posts
     assert [(c["path"], c["line"]) for c in payload["comments"]] == [
         ("ddio/file.cpp", 223), ("ddio/file.cpp", 227)]

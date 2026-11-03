@@ -25,9 +25,9 @@ on that pull request, so write for the pull request's author.
   absent, the branch was rebased, rewritten or merged with its base branch,
   and those changes cannot be separated from the rest of `diff.patch`.
 - `/work/numbered_interdiff.txt`: present only together with
-  `interdiff.patch`; that diff with head line numbers, written like
-  `numbered_diff.txt`. A comment is placed inline only on a line that
-  `numbered_diff.txt` shows.
+  `interdiff.patch`, and absent when that diff is too large; that diff with
+  head line numbers, written like `numbered_diff.txt`. A comment is placed
+  inline only on a line that `numbered_diff.txt` shows.
 
 You can only read files. You have the Read, Grep and Glob tools and nothing
 else. You cannot run code, use a shell, access the network, or change files.
@@ -83,14 +83,15 @@ appears in `/work/files.txt`) and `line`, the line number in the new (head)
 version of that file.
 
 Take the line number from `/work/numbered_diff.txt`. In that file, an added
-or context line of the diff is written as `<path>:<number>:` followed by the
-diff line (which starts with `+` or a space), and `<number>` is its line
-number in the head version of `<path>`. For example,
-`src/app.c:120:+  if (p == NULL)` is line 120 of `src/app.c`. Only these
-lines can carry an inline comment. A removed line is written as
-`<path>:-:` followed by the diff line: it has no number in the head version,
-so a comment about removed code cites an added or context line next to the
-removal in the same hunk. File and hunk headers are copied unchanged.
+or context line of the diff is written as `<number>:` followed by the diff
+line (which starts with `+` or a space), and `<number>` is its line number
+in the head version of the file named by the nearest `+++ b/<path>` header
+above it. For example, `120:+  if (p == NULL)` under `+++ b/src/app.c` is
+line 120 of `src/app.c`. Only these lines can carry an inline comment. A
+removed line is written as `-:` followed by the diff line: it has no number
+in the head version, so a comment about removed code cites an added or
+context line next to the removal in the same hunk. File and hunk headers
+are copied unchanged.
 
 The line numbers that the Read and Grep tools show for `diff.patch`,
 `interdiff.patch` or the numbered files count lines of that diff file, not

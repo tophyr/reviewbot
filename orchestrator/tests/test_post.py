@@ -7,7 +7,7 @@ import pytest
 from conftest import fixture_text
 
 from reviewbot import post
-from reviewbot.diffmap import diff_positions, parse_diff
+from reviewbot.diffmap import parse_diff
 from reviewbot.github_auth import GitHubError
 
 HEAD = "f" * 40
@@ -401,7 +401,7 @@ def d3_review(*lines):
 def d3_build(structured, **kw):
     text = fixture_text("descent3_625.diff")
     return post.build_payload(structured, HEAD, parse_diff(text), D3_FILES, slug=SLUG,
-                              positions=diff_positions(text), **kw)
+                              diff_text=text, **kw)
 
 
 def test_descent3_625_file_lines_are_posted_inline():

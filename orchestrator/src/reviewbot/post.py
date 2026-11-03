@@ -14,7 +14,7 @@ import re
 import sys
 from typing import TextIO
 
-from .diffmap import can_place
+from .diffmap import can_place, diff_positions
 from .github_auth import GitHubError
 
 log = logging.getLogger(__name__)
@@ -203,16 +203,16 @@ def _comment_text(c: dict) -> str:
 
 def build_payload(structured: dict, head_sha: str, diffmap: dict[str, set[int]],
                   files: set[str], *, slug: str, relocate_all: bool = False,
-                  positions: dict[str, dict[int, int]] | None = None) -> dict:
+                  diff_text: str | None = None) -> dict:
     """The review POST body. slug is the app's, named in the footer's review
     request command (see pipeline.take_review_requests).
 
-    A comment whose line is not in the diff is listed in the body. positions
-    (diffmap.diff_positions of the same diff) lets that entry say which head
+    A comment whose line is not in the diff is listed in the body. diff_text
+    (the diff that diffmap was parsed from) lets that entry say which head
     line the number is when it is a line position in the diff file itself,
     the mistake of counting lines of diff.patch instead of the source file."""
     inline: list[dict] = []
-    moved: list[tuple[dict, int | None]] = []
+    listed: list[tuple[dict, bool]] = []  # (comment, whether its line is in the diff)
     for c in structured["comments"]:
         in_diff = can_place(diffmap, files, c["path"], c["line"])
         if in_diff and not relocate_all:
@@ -222,11 +222,14 @@ def build_payload(structured: dict, head_sha: str, diffmap: dict[str, set[int]],
                 "side": "RIGHT",
                 "body": defang(_comment_text(c)),
             })
-            continue
-        diff_line = None
-        if not in_diff and positions is not None:
-            diff_line = positions.get(c["path"], {}).get(c["line"])
-        moved.append((c, diff_line))
+        else:
+            listed.append((c, in_diff))
+    positions = {}
+    if diff_text is not None:
+        positions = diff_positions(diff_text, {(c["path"], c["line"])
+                                               for c, in_diff in listed if not in_diff})
+    moved = [(c, None if in_diff else positions.get((c["path"], c["line"])))
+             for c, in_diff in listed]
 
     miscounted = sum(1 for _, d in moved if d is not None)
     if miscounted and not relocate_all:

@@ -8,6 +8,7 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 from . import dockerrun
 from .config import CONTRACT
@@ -49,6 +50,10 @@ LOG_TMPFS_MB = int(CONTRACT["LOG_TMPFS_MB"])
 
 class FetchError(dockerrun.PullRequestFailure):
     """The fetcher's output is unusable."""
+
+
+class TooLarge(FetchError):
+    """A file read from or written to the work directory is over its size cap."""
 
 
 def build_argv(image: str, name: str, work: Path, max_fetch_mb: int) -> list[str]:
@@ -128,7 +133,7 @@ def _read_regular(path: Path, limit: int) -> str:
         if not stat.S_ISREG(st.st_mode):
             raise FetchError(f"{path.name} is not a regular file")
         if st.st_size > limit:
-            raise FetchError(f"{path.name} is {st.st_size} bytes, limit {limit}")
+            raise TooLarge(f"{path.name} is {st.st_size} bytes, limit {limit}")
         with os.fdopen(fd, "rb", closefd=False) as fh:
             data = fh.read(limit + 1)
     finally:
@@ -138,58 +143,79 @@ def _read_regular(path: Path, limit: int) -> str:
 
 def write_json(work: Path, name: str, doc: dict) -> None:
     """Write doc as WORK/name (pr.json or previous_review.json); see write_text."""
-    write_text(work, name, json.dumps(doc) + "\n")
+    write_text(work, name, [json.dumps(doc) + "\n"])
 
 
-def write_text(work: Path, name: str, text: str) -> None:
-    """Write text as WORK/name, mode 0644 so that the reviewer's uid can read
-    it (the service runs with UMask=0077). The orchestrator writes pr.json,
-    previous_review.json and the numbered diffs this way.
+def write_text(work: Path, name: str, chunks: Iterable[str], limit: int | None = None) -> None:
+    """Write the chunks, one after another, as WORK/name, mode 0644 so that
+    the reviewer's uid can read it (the service runs with UMask=0077). The
+    orchestrator writes pr.json, previous_review.json and the numbered diffs
+    this way. Each chunk is written as it comes, so the whole text is never
+    held in memory.
 
     Called after the fetcher succeeds. The file must
     not exist yet: the fetcher does not write it. Raises FetchError if it
-    does exist, and EnvironmentFailure if it cannot be written.
+    does exist, and EnvironmentFailure if it cannot be written. If the text
+    would be over limit bytes, removes what was written and raises TooLarge.
     """
-    data = text.encode("utf-8")
+    path = work / name
+    written = 0
     try:
         # "x" opens with O_CREAT | O_EXCL, which also refuses a symlink
         # planted in its place, even one whose target does not exist.
-        with open(work / name, "xb") as fh:
+        with open(path, "xb") as fh:
             os.fchmod(fh.fileno(), 0o644)
-            fh.write(data)
+            for chunk in chunks:
+                data = chunk.encode("utf-8")
+                written += len(data)
+                if limit is not None and written > limit:
+                    break
+                fh.write(data)
+        if limit is None or written <= limit:
+            return
+        path.unlink()
     except FileExistsError as exc:
         raise FetchError(f"{name} already exists in the work directory; "
                          "the fetcher must not write it") from exc
     except OSError as exc:
         raise dockerrun.EnvironmentFailure(f"cannot write {name} in {work}: {exc}") from exc
+    raise TooLarge(f"{name} would be over {limit} bytes")
 
 
 @dataclass
 class FetchedWork:
     diff_text: str
     files: set[str]
-    # The text of interdiff.patch, None when the fetcher did not write it
-    # (it does so only when it was given prev_sha).
+    # The fetcher wrote interdiff.patch (only when it was given prev_sha).
+    has_interdiff: bool
+    # The text of interdiff.patch; None when there is none or it is over
+    # MAX_DIFF_BYTES.
     interdiff_text: str | None = None
-
-    @property
-    def has_interdiff(self) -> bool:
-        return self.interdiff_text is not None
 
 
 def read_fetch_output(work: Path) -> FetchedWork:
     """Read diff.patch, files.txt and, when present, interdiff.patch from the
     fetcher's output. They are read with _read_regular: the fetcher handles
-    hostile repository content, and this runs in the orchestrator on the host."""
+    hostile repository content, and this runs in the orchestrator on the host.
+
+    interdiff.patch is optional input, so one over MAX_DIFF_BYTES does not
+    fail the review: it stays in the work directory without its text being
+    read. It can be larger than diff.patch, for example when an earlier head
+    added a large file that a later commit removed."""
+    interdiff_text = None
     try:
         diff_text = _read_regular(work / "diff.patch", MAX_DIFF_BYTES)
         files_text = _read_regular(work / "files.txt", MAX_FILES_BYTES)
-        interdiff_text = (_read_regular(work / "interdiff.patch", MAX_DIFF_BYTES)
-                          if os.path.lexists(work / "interdiff.patch") else None)
+        has_interdiff = os.path.lexists(work / "interdiff.patch")
+        if has_interdiff:
+            try:
+                interdiff_text = _read_regular(work / "interdiff.patch", MAX_DIFF_BYTES)
+            except TooLarge as exc:
+                log.warning("not reading interdiff.patch: %s", exc)
     except OSError as exc:
         raise FetchError(f"fetcher output unreadable: {exc}") from exc
     # One raw path per line: the fetcher writes git diff --name-only -z with
     # each NUL turned into a newline, and fails on a path that contains a
     # newline. The lines are not in git's quoted form and are used as they are.
     files = {line for line in files_text.split("\n") if line}
-    return FetchedWork(diff_text, files, interdiff_text)
+    return FetchedWork(diff_text, files, has_interdiff, interdiff_text)
